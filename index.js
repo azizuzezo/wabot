@@ -1555,7 +1555,9 @@ async function startWhatsApp() {
       if (statusCode === 440) {
         console.log("⚠️ Status 440: kemungkinan session WhatsApp dipakai dobel.");
         console.log("Pastikan bot lokal dimatikan kalau Railway aktif.");
+
         setTimeout(() => scheduleReconnect(), 10000);
+
         return;
       }
 
@@ -1658,6 +1660,10 @@ async function startWhatsApp() {
         const metadata = await getGroupMetadata(sock, jid);
         const senderIsAdmin = isAdmin(metadata, sender);
 
+        // =================================================
+        // ANTI LINK
+        // =================================================
+
         if (
           !msg.key.fromMe &&
           settings.antiLink &&
@@ -1691,6 +1697,76 @@ async function startWhatsApp() {
 
         logInfo(`MESSAGE | ${jid} | ${msg.pushName || sender}: ${text}`);
 
+        // =================================================
+        // DELETE / CLEAR MESSAGE
+        // =================================================
+
+        if (
+          command === "!del" ||
+          command === "!delete" ||
+          command === "!hapus"
+        ) {
+          if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
+          if (!(await requireBotAdmin(sock, jid, msg, metadata))) continue;
+
+          const context = getContextInfo(msg.message);
+
+          if (!context?.stanzaId) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Reply pesan yang mau dihapus, lalu ketik *!del*.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          const deleteKey = {
+            remoteJid: jid,
+            id: context.stanzaId,
+            participant: context.participant,
+            fromMe: false,
+          };
+
+          try {
+            await sock.sendMessage(jid, {
+              delete: deleteKey,
+            });
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `✅ Pesan berhasil dihapus.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          } catch (error) {
+            logError("Delete message", error);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Gagal menghapus pesan. Pastikan bot sudah admin grup.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          }
+
+          continue;
+        }
+
+        // =================================================
+        // OWNER MENU
+        // =================================================
+
         if (command === "!owner") {
           if (!(await requireOwnerAdmin(sock, jid, sender, msg))) continue;
 
@@ -1706,6 +1782,10 @@ async function startWhatsApp() {
 
           continue;
         }
+
+        // =================================================
+        // STATUS
+        // =================================================
 
         if (command === "!status") {
           if (!(await requireOwnerAdmin(sock, jid, sender, msg))) continue;
@@ -1743,6 +1823,10 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // GROUPS
+        // =================================================
+
         if (command === "!groups") {
           if (!(await requireOwnerAdmin(sock, jid, sender, msg))) continue;
 
@@ -1773,6 +1857,10 @@ async function startWhatsApp() {
 
           continue;
         }
+
+        // =================================================
+        // SETGROUP
+        // =================================================
 
         if (command.startsWith("!setgroup")) {
           if (!(await requireOwner(sock, jid, sender, msg))) continue;
@@ -1901,6 +1989,10 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // BROADCAST
+        // =================================================
+
         if (command.startsWith("!broadcast")) {
           if (!(await requireOwner(sock, jid, sender, msg))) continue;
 
@@ -1951,6 +2043,10 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // BACKUP DATABASE
+        // =================================================
+
         if (command === "!backupdb") {
           if (!(await requireOwner(sock, jid, sender, msg))) continue;
 
@@ -1994,6 +2090,10 @@ async function startWhatsApp() {
 
           continue;
         }
+
+        // =================================================
+        // OWNER ADMIN
+        // =================================================
 
         if (command.startsWith("!owneradmin")) {
           if (!(await requireOwner(sock, jid, sender, msg))) continue;
@@ -2119,6 +2219,10 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // BASIC COMMANDS
+        // =================================================
+
         if (command === "!ping") {
           await sock.sendMessage(
             jid,
@@ -2171,7 +2275,7 @@ async function startWhatsApp() {
           await sock.sendMessage(
             jid,
             {
-              text: `🛡️ *${BOT_NAME} ADMIN COMMANDS*\n\n━━━━━━━━━━━━━━━━━━\n\n👋 !welcome on\n👋 !welcome off\n\n🚫 !antilink on\n🚫 !antilink off\n\n🧠 !aibot on\n🧠 !aibot off\n\n📢 !tagall [pesan]\n\n⚠️ !warn @user [alasan]\n✅ !unwarn @user\n📋 !warnings\n\n👢 !kick @user\n⬆️ !promote @user\n⬇️ !demote @user\n\n━━━━━━━━━━━━━━━━━━\n\n⚠️ Kick, promote, demote, dan hapus pesan anti-link membutuhkan akun bot menjadi admin grup.${FOOTER}`,
+              text: `🛡️ *${BOT_NAME} ADMIN COMMANDS*\n\n━━━━━━━━━━━━━━━━━━\n\n👋 !welcome on\n👋 !welcome off\n\n🚫 !antilink on\n🚫 !antilink off\n\n🧠 !aibot on\n🧠 !aibot off\n\n📢 !tagall [pesan]\n\n🗑 !del\nReply pesan lalu hapus pesan tersebut\n\n⚠️ !warn @user [alasan]\n✅ !unwarn @user\n📋 !warnings\n\n👢 !kick @user\n⬆️ !promote @user\n⬇️ !demote @user\n\n━━━━━━━━━━━━━━━━━━\n\n⚠️ Hapus pesan, kick, promote, demote, dan anti-link delete membutuhkan akun bot menjadi admin grup.${FOOTER}`,
             },
             {
               quoted: msg,
@@ -2198,6 +2302,10 @@ async function startWhatsApp() {
 
           continue;
         }
+
+        // =================================================
+        // REMINDER
+        // =================================================
 
         if (command.startsWith("!remind ")) {
           const parsed = parseReminderSpec(text.slice(8));
@@ -2324,6 +2432,10 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // ADMIN SETTINGS
+        // =================================================
+
         if (/^!(welcome|antilink|aibot)\s+(on|off)$/i.test(text)) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
 
@@ -2358,6 +2470,10 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // TAG ALL
+        // =================================================
+
         if (command.startsWith("!tagall")) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
 
@@ -2372,6 +2488,10 @@ async function startWhatsApp() {
 
           continue;
         }
+
+        // =================================================
+        // WARNING COMMANDS
+        // =================================================
 
         if (command.startsWith("!warn")) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
@@ -2455,6 +2575,10 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // KICK / PROMOTE / DEMOTE
+        // =================================================
+
         if (/^!(kick|promote|demote)\b/i.test(text)) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
           if (!(await requireBotAdmin(sock, jid, msg, metadata))) continue;
@@ -2493,6 +2617,10 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // RESET AI
+        // =================================================
+
         if (command === "!resetai") {
           await resetAIHistory(jid);
 
@@ -2508,6 +2636,10 @@ async function startWhatsApp() {
 
           continue;
         }
+
+        // =================================================
+        // AI TEXT / IMAGE
+        // =================================================
 
         const aiCommand = command === "!ai" || command.startsWith("!ai ");
         const mentioned = isBotMentioned(sock, msg);
