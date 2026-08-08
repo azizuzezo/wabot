@@ -1,5 +1,11 @@
 import "dotenv/config";
 
+import WebSocket from "ws";
+
+if (!globalThis.WebSocket) {
+  globalThis.WebSocket = WebSocket;
+}
+
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
@@ -26,6 +32,18 @@ const ALLOWED_GROUPS = new Set([
 ]);
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+
+const AUTH_DIR =
+  process.env.AUTH_DIR ||
+  "./auth_info_baileys";
+
+const USE_PAIRING_CODE =
+  process.env.USE_PAIRING_CODE === "true";
+
+const BOT_PHONE_NUMBER =
+  String(process.env.BOT_PHONE_NUMBER || "")
+    .replace(/\D/g, "");
+
 const AI_COOLDOWN_MS = 8_000;
 const MAX_QUESTION_LENGTH = 1_500;
 const MAX_RESPONSE_LENGTH = 3_500;
@@ -1397,6 +1415,8 @@ async function startWhatsApp() {
   console.log(`🧠 Gemini: ${GEMINI_MODEL}`);
   console.log(`🔐 Whitelist Groups: ${ALLOWED_GROUPS.size}`);
   console.log(`💾 Database: ${database ? "ON" : "OFF"}`);
+  console.log(`📁 Auth Dir: ${AUTH_DIR}`);
+  console.log(`🔐 Pairing Code: ${USE_PAIRING_CODE ? "ON" : "OFF"}`);
   console.log(`${BOT_CREDIT}\n`);
 
   await loadAllowedGroupsFromDatabase();
@@ -1416,12 +1436,7 @@ async function startWhatsApp() {
     logError("Load pending reminders", error);
   });
 
-  const AUTH_DIR =
-    process.env.AUTH_DIR ||
-    "./auth_info_baileys";
-
-  const { state, saveCreds } =
-    await useMultiFileAuthState(AUTH_DIR);
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
   const sock = makeWASocket({
     auth: state,
@@ -1432,13 +1447,63 @@ async function startWhatsApp() {
 
   activeSock = sock;
 
+  let pairingCodeRequested = false;
+
   // ===================================================
   // CONNECTION
   // ===================================================
 
   sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      console.log("📱 Scan QR: WhatsApp → Perangkat Tertaut → Tautkan Perangkat\n");
+      if (
+        USE_PAIRING_CODE &&
+        BOT_PHONE_NUMBER &&
+        !pairingCodeRequested &&
+        !state.creds.registered
+      ) {
+        pairingCodeRequested = true;
+
+        try {
+          console.log("");
+          console.log("🔐 Meminta pairing code...");
+          console.log("Nomor:", BOT_PHONE_NUMBER);
+          console.log("");
+
+          const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
+
+          console.log("");
+          console.log("================================");
+          console.log("🔐 PAIRING CODE WHATSAPP");
+          console.log("================================");
+          console.log("");
+          console.log(code);
+          console.log("");
+          console.log("Buka WhatsApp:");
+          console.log("Perangkat Tertaut");
+          console.log("→ Tautkan Perangkat");
+          console.log("→ Tautkan dengan nomor telepon");
+          console.log("→ Masukkan kode di atas");
+          console.log("");
+          console.log("================================");
+          console.log("");
+        } catch (error) {
+          logError("Request pairing code", error);
+
+          console.log("");
+          console.log("Fallback ke QR:");
+          console.log("");
+
+          qrcode.generate(qr, {
+            small: true,
+          });
+        }
+
+        return;
+      }
+
+      console.log("");
+      console.log("📱 Scan QR: WhatsApp → Perangkat Tertaut → Tautkan Perangkat");
+      console.log("");
 
       qrcode.generate(qr, {
         small: true,
@@ -1483,7 +1548,14 @@ async function startWhatsApp() {
       console.log("❌ Connection closed. Status:", statusCode);
 
       if (statusCode === DisconnectReason.loggedOut) {
-        console.log("⚠️ Session logout. Hapus auth_info_baileys lalu scan QR ulang.");
+        console.log("⚠️ Session logout. Hapus auth_info_baileys lalu scan QR/pairing ulang.");
+        return;
+      }
+
+      if (statusCode === 440) {
+        console.log("⚠️ Status 440: kemungkinan session WhatsApp dipakai dobel.");
+        console.log("Pastikan bot lokal dimatikan kalau Railway aktif.");
+        setTimeout(() => scheduleReconnect(), 10000);
         return;
       }
 
@@ -1586,10 +1658,6 @@ async function startWhatsApp() {
         const metadata = await getGroupMetadata(sock, jid);
         const senderIsAdmin = isAdmin(metadata, sender);
 
-        // =================================================
-        // ANTI LINK
-        // =================================================
-
         if (
           !msg.key.fromMe &&
           settings.antiLink &&
@@ -1623,10 +1691,6 @@ async function startWhatsApp() {
 
         logInfo(`MESSAGE | ${jid} | ${msg.pushName || sender}: ${text}`);
 
-        // =================================================
-        // OWNER MENU
-        // =================================================
-
         if (command === "!owner") {
           if (!(await requireOwnerAdmin(sock, jid, sender, msg))) continue;
 
@@ -1642,10 +1706,6 @@ async function startWhatsApp() {
 
           continue;
         }
-
-        // =================================================
-        // STATUS
-        // =================================================
 
         if (command === "!status") {
           if (!(await requireOwnerAdmin(sock, jid, sender, msg))) continue;
@@ -1667,7 +1727,7 @@ async function startWhatsApp() {
                 aiHistoryMap.size
               }\n\n🧑‍💼 Owner Admins:\n${
                 ownerAdminJids.size
-              }\n\n🧠 Model:\n${GEMINI_MODEL}\n\n🧮 Memory Usage:\nRSS ${(
+              }\n\n🧠 Model:\n${GEMINI_MODEL}\n\n📁 Auth Dir:\n${AUTH_DIR}\n\n🧮 Memory Usage:\nRSS ${(
                 memory.rss /
                 1024 /
                 1024
@@ -1682,10 +1742,6 @@ async function startWhatsApp() {
 
           continue;
         }
-
-        // =================================================
-        // GROUPS
-        // =================================================
 
         if (command === "!groups") {
           if (!(await requireOwnerAdmin(sock, jid, sender, msg))) continue;
@@ -1717,10 +1773,6 @@ async function startWhatsApp() {
 
           continue;
         }
-
-        // =================================================
-        // SETGROUP
-        // =================================================
 
         if (command.startsWith("!setgroup")) {
           if (!(await requireOwner(sock, jid, sender, msg))) continue;
@@ -1849,10 +1901,6 @@ async function startWhatsApp() {
           continue;
         }
 
-        // =================================================
-        // BROADCAST OWNER ONLY
-        // =================================================
-
         if (command.startsWith("!broadcast")) {
           if (!(await requireOwner(sock, jid, sender, msg))) continue;
 
@@ -1903,10 +1951,6 @@ async function startWhatsApp() {
           continue;
         }
 
-        // =================================================
-        // BACKUP DATABASE OWNER ONLY
-        // =================================================
-
         if (command === "!backupdb") {
           if (!(await requireOwner(sock, jid, sender, msg))) continue;
 
@@ -1950,10 +1994,6 @@ async function startWhatsApp() {
 
           continue;
         }
-
-        // =================================================
-        // OWNER ADMIN WHITELIST
-        // =================================================
 
         if (command.startsWith("!owneradmin")) {
           if (!(await requireOwner(sock, jid, sender, msg))) continue;
@@ -2079,10 +2119,6 @@ async function startWhatsApp() {
           continue;
         }
 
-        // =================================================
-        // BASIC COMMANDS
-        // =================================================
-
         if (command === "!ping") {
           await sock.sendMessage(
             jid,
@@ -2162,10 +2198,6 @@ async function startWhatsApp() {
 
           continue;
         }
-
-        // =================================================
-        // REMINDER
-        // =================================================
 
         if (command.startsWith("!remind ")) {
           const parsed = parseReminderSpec(text.slice(8));
@@ -2292,10 +2324,6 @@ async function startWhatsApp() {
           continue;
         }
 
-        // =================================================
-        // ADMIN SETTINGS
-        // =================================================
-
         if (/^!(welcome|antilink|aibot)\s+(on|off)$/i.test(text)) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
 
@@ -2330,10 +2358,6 @@ async function startWhatsApp() {
           continue;
         }
 
-        // =================================================
-        // TAG ALL
-        // =================================================
-
         if (command.startsWith("!tagall")) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
 
@@ -2348,10 +2372,6 @@ async function startWhatsApp() {
 
           continue;
         }
-
-        // =================================================
-        // WARNING COMMANDS
-        // =================================================
 
         if (command.startsWith("!warn")) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
@@ -2435,10 +2455,6 @@ async function startWhatsApp() {
           continue;
         }
 
-        // =================================================
-        // KICK / PROMOTE / DEMOTE
-        // =================================================
-
         if (/^!(kick|promote|demote)\b/i.test(text)) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
           if (!(await requireBotAdmin(sock, jid, msg, metadata))) continue;
@@ -2477,10 +2493,6 @@ async function startWhatsApp() {
           continue;
         }
 
-        // =================================================
-        // RESET AI
-        // =================================================
-
         if (command === "!resetai") {
           await resetAIHistory(jid);
 
@@ -2496,10 +2508,6 @@ async function startWhatsApp() {
 
           continue;
         }
-
-        // =================================================
-        // AI TEXT / IMAGE
-        // =================================================
 
         const aiCommand = command === "!ai" || command.startsWith("!ai ");
         const mentioned = isBotMentioned(sock, msg);
