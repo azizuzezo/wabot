@@ -9,7 +9,7 @@
     "check": "node --check index.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "dependencies": {
     "@hapi/boom": "latest",
