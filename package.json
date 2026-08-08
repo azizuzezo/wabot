@@ -1,0 +1,21 @@
+{
+  "name": "muter-assistant-whatsapp-bot",
+  "version": "1.0.0",
+  "description": "Muter Assistant WhatsApp Group AI Bot",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@hapi/boom": "latest",
+    "@supabase/supabase-js": "latest",
+    "@whiskeysockets/baileys": "latest",
+    "dotenv": "latest",
+    "qrcode-terminal": "latest"
+  }
+}
