@@ -51,6 +51,15 @@ const WARNING_LIMIT = 3;
 const GROUP_CACHE_TTL_MS = 5 * 60 * 1000;
 const AI_HISTORY_LIMIT = 10;
 
+const FLOOD_WINDOW_MS = 10_000;
+const FLOOD_LIMIT = 6;
+const POLL_DEFAULT_DURATION_MS = 5 * 60_000;
+const TRIVIA_DURATION_MS = 60_000;
+const STATS_FLUSH_INTERVAL_MS = 5 * 60_000;
+const SUMMARY_DEFAULT_COUNT = 50;
+const SUMMARY_MAX_COUNT = 150;
+const MESSAGE_LOG_LIMIT = 200;
+
 if (!process.env.GEMINI_API_KEY) {
   console.error("❌ GEMINI_API_KEY tidak ditemukan di .env");
   process.exit(1);
@@ -91,6 +100,13 @@ const aiHistoryMap = new Map();
 const reminderTimers = new Map();
 const reminders = new Map();
 const ownerAdminJids = new Set();
+const messageFlood = new Map();
+const messageLog = new Map();
+const activePolls = new Map();
+const pollTimers = new Map();
+const triviaSessions = new Map();
+const triviaTimers = new Map();
+const groupStatsRAM = new Map();
 
 let activeSock = null;
 let reconnectTimer = null;
@@ -165,6 +181,9 @@ function defaultSettings(groupId) {
     welcome: true,
     antiLink: true,
     aiEnabled: true,
+    antiSpam: true,
+    imgModeration: false,
+    badWords: [],
   };
 }
 
@@ -178,7 +197,9 @@ async function getGroupSettings(groupId) {
   if (database) {
     const { data, error } = await database
       .from("bot_group_settings")
-      .select("group_id,welcome,anti_link,ai_enabled")
+      .select(
+        "group_id,welcome,anti_link,ai_enabled,anti_spam,img_moderation,bad_words"
+      )
       .eq("group_id", groupId)
       .maybeSingle();
 
@@ -192,6 +213,9 @@ async function getGroupSettings(groupId) {
         welcome: Boolean(data.welcome),
         antiLink: Boolean(data.anti_link),
         aiEnabled: Boolean(data.ai_enabled),
+        antiSpam: data.anti_spam === null ? true : Boolean(data.anti_spam),
+        imgModeration: Boolean(data.img_moderation),
+        badWords: Array.isArray(data.bad_words) ? data.bad_words : [],
       };
     } else {
       await database.from("bot_group_settings").upsert({
@@ -199,6 +223,9 @@ async function getGroupSettings(groupId) {
         welcome: settings.welcome,
         anti_link: settings.antiLink,
         ai_enabled: settings.aiEnabled,
+        anti_spam: settings.antiSpam,
+        img_moderation: settings.imgModeration,
+        bad_words: settings.badWords,
         updated_at: new Date().toISOString(),
       });
     }
@@ -221,6 +248,9 @@ async function saveGroupSettings(groupId) {
     welcome: settings.welcome,
     anti_link: settings.antiLink,
     ai_enabled: settings.aiEnabled,
+    anti_spam: settings.antiSpam,
+    img_moderation: settings.imgModeration,
+    bad_words: settings.badWords,
     updated_at: new Date().toISOString(),
   });
 
@@ -455,6 +485,52 @@ function containsLink(text) {
   return /(?:https?:\/\/|www\.|chat\.whatsapp\.com\/|wa\.me\/|t\.me\/|discord\.gg\/)/i.test(
     text
   );
+}
+
+// =====================================================
+// MODERATION & LOGGING HELPERS
+// =====================================================
+
+function matchesBadWord(text, badWords) {
+  if (!badWords || !badWords.length || !text) {
+    return null;
+  }
+
+  const lower = text.toLowerCase();
+
+  for (const word of badWords) {
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(?:^|\\W)${escaped}(?:$|\\W)`, "i");
+
+    if (regex.test(lower)) {
+      return word;
+    }
+  }
+
+  return null;
+}
+
+function recordFloodHit(key) {
+  const now = Date.now();
+  const hits = (messageFlood.get(key) || []).filter(
+    (at) => now - at < FLOOD_WINDOW_MS
+  );
+
+  hits.push(now);
+  messageFlood.set(key, hits);
+
+  return hits.length >= FLOOD_LIMIT;
+}
+
+function pushMessageLog(groupId, entry) {
+  const log = messageLog.get(groupId) || [];
+  log.push(entry);
+
+  if (log.length > MESSAGE_LOG_LIMIT) {
+    log.splice(0, log.length - MESSAGE_LOG_LIMIT);
+  }
+
+  messageLog.set(groupId, log);
 }
 
 // =====================================================
@@ -940,6 +1016,532 @@ async function listWarnings(groupId) {
 }
 
 // =====================================================
+// GROUP STATS
+// =====================================================
+
+function statsKey(groupId, userJid) {
+  return `${groupId}:${userJid}`;
+}
+
+function bumpMessageStat(groupId, userJid) {
+  const key = statsKey(groupId, userJid);
+  const current = groupStatsRAM.get(key) || { count: 0, lastAt: 0 };
+
+  current.count += 1;
+  current.lastAt = Date.now();
+
+  groupStatsRAM.set(key, current);
+}
+
+async function flushGroupStats() {
+  if (!database || !groupStatsRAM.size) {
+    return;
+  }
+
+  const rows = [...groupStatsRAM.entries()].map(([key, value]) => {
+    const separatorIndex = key.indexOf(":");
+
+    return {
+      group_id: key.slice(0, separatorIndex),
+      user_jid: key.slice(separatorIndex + 1),
+      message_count: value.count,
+      last_message_at: new Date(value.lastAt).toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+  });
+
+  const { error } = await database.from("bot_group_stats").upsert(rows);
+
+  if (error) {
+    logError("Flush group stats", error);
+  }
+}
+
+async function loadGroupStats() {
+  if (!database) {
+    return;
+  }
+
+  const { data, error } = await database
+    .from("bot_group_stats")
+    .select("group_id,user_jid,message_count,last_message_at");
+
+  if (error) {
+    logError("Load group stats", error);
+    return;
+  }
+
+  for (const row of data || []) {
+    groupStatsRAM.set(statsKey(row.group_id, row.user_jid), {
+      count: Number(row.message_count || 0),
+      lastAt: row.last_message_at ? new Date(row.last_message_at).getTime() : 0,
+    });
+  }
+
+  logInfo(`Group stats loaded: ${groupStatsRAM.size}`);
+}
+
+function listTopStats(groupId, limit = 10) {
+  const rows = [];
+
+  for (const [key, value] of groupStatsRAM) {
+    if (key.startsWith(`${groupId}:`)) {
+      rows.push({
+        userJid: key.slice(groupId.length + 1),
+        count: value.count,
+      });
+    }
+  }
+
+  return rows.sort((a, b) => b.count - a.count).slice(0, limit);
+}
+
+async function resetGroupStats(groupId) {
+  for (const key of [...groupStatsRAM.keys()]) {
+    if (key.startsWith(`${groupId}:`)) {
+      groupStatsRAM.delete(key);
+    }
+  }
+
+  if (!database) {
+    return;
+  }
+
+  const { error } = await database
+    .from("bot_group_stats")
+    .delete()
+    .eq("group_id", groupId);
+
+  if (error) {
+    logError("Reset group stats", error);
+  }
+}
+
+// =====================================================
+// NOTES DATABASE
+// =====================================================
+
+function noteId() {
+  return randomUUID().slice(0, 6).toUpperCase();
+}
+
+async function addNote(groupId, content, creator) {
+  const id = noteId();
+  const createdAt = new Date().toISOString();
+  const note = { id, groupId, content, creator, createdAt };
+
+  if (!database) {
+    globalThis.__notesRAM ||= new Map();
+    const list = globalThis.__notesRAM.get(groupId) || [];
+    list.push(note);
+    globalThis.__notesRAM.set(groupId, list);
+    return note;
+  }
+
+  const { error } = await database.from("bot_notes").insert({
+    id,
+    group_id: groupId,
+    content,
+    creator_jid: creator,
+    created_at: createdAt,
+  });
+
+  if (error) {
+    logError("Add note", error);
+  }
+
+  return note;
+}
+
+async function listNotes(groupId) {
+  if (!database) {
+    return globalThis.__notesRAM?.get(groupId) || [];
+  }
+
+  const { data, error } = await database
+    .from("bot_notes")
+    .select("id,content,creator_jid,created_at")
+    .eq("group_id", groupId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    logError("List notes", error);
+    return [];
+  }
+
+  return (data || []).map((row) => ({
+    id: row.id,
+    groupId,
+    content: row.content,
+    creator: row.creator_jid,
+    createdAt: row.created_at,
+  }));
+}
+
+async function getNote(groupId, id) {
+  const list = await listNotes(groupId);
+  return list.find((note) => note.id === id) || null;
+}
+
+async function deleteNote(groupId, id) {
+  if (!database) {
+    const list = (globalThis.__notesRAM?.get(groupId) || []).filter(
+      (note) => note.id !== id
+    );
+    globalThis.__notesRAM?.set(groupId, list);
+    return;
+  }
+
+  const { error } = await database
+    .from("bot_notes")
+    .delete()
+    .eq("group_id", groupId)
+    .eq("id", id);
+
+  if (error) {
+    logError("Delete note", error);
+  }
+}
+
+// =====================================================
+// POLL DATABASE / SCHEDULER
+// =====================================================
+
+function pollId() {
+  return randomUUID().slice(0, 6).toUpperCase();
+}
+
+function clearPollTimer(id) {
+  const timer = pollTimers.get(id);
+
+  if (timer) {
+    clearTimeout(timer);
+  }
+
+  pollTimers.delete(id);
+}
+
+function formatPollResult(poll) {
+  const tally = poll.options.map(() => 0);
+
+  for (const optionIndex of poll.votes.values()) {
+    if (tally[optionIndex] !== undefined) {
+      tally[optionIndex]++;
+    }
+  }
+
+  const totalVotes = poll.votes.size;
+
+  const lines = poll.options
+    .map((option, index) => {
+      const count = tally[index];
+      const pct = totalVotes ? Math.round((count / totalVotes) * 100) : 0;
+      return `${index + 1}. ${option} — ${count} suara (${pct}%)`;
+    })
+    .join("\n");
+
+  return { lines, totalVotes };
+}
+
+async function markPollStatus(id, status) {
+  if (!database) {
+    return;
+  }
+
+  const { error } = await database
+    .from("bot_polls")
+    .update({ status })
+    .eq("id", id);
+
+  if (error) {
+    logError("Update poll status", error);
+  }
+}
+
+function schedulePollClose(poll) {
+  clearPollTimer(poll.id);
+
+  if (poll.status !== "open") {
+    return;
+  }
+
+  const delay = Math.max(0, poll.closeAt - Date.now());
+
+  const timer = setTimeout(async () => {
+    const current = activePolls.get(poll.id);
+
+    if (!current || current.status !== "open") {
+      return;
+    }
+
+    current.status = "closed";
+    activePolls.set(poll.id, current);
+    await markPollStatus(poll.id, "closed");
+
+    if (!activeSock) {
+      return;
+    }
+
+    const { lines, totalVotes } = formatPollResult(current);
+
+    try {
+      await activeSock.sendMessage(current.groupId, {
+        text: `📊 *POLLING SELESAI*\n\n❓ ${current.question}\n\n${lines}\n\nTotal suara: ${totalVotes}${FOOTER}`,
+      });
+    } catch (error) {
+      logError("Poll auto-close send", error);
+    }
+  }, delay);
+
+  pollTimers.set(poll.id, timer);
+}
+
+async function savePoll(poll) {
+  activePolls.set(poll.id, poll);
+  schedulePollClose(poll);
+
+  if (!database) {
+    return;
+  }
+
+  const { error } = await database.from("bot_polls").upsert({
+    id: poll.id,
+    group_id: poll.groupId,
+    question: poll.question,
+    options: poll.options,
+    votes: Object.fromEntries(poll.votes),
+    creator_jid: poll.creator,
+    status: poll.status,
+    close_at: new Date(poll.closeAt).toISOString(),
+    created_at: poll.createdAt,
+  });
+
+  if (error) {
+    logError("Save poll", error);
+  }
+}
+
+async function saveVotes(poll) {
+  if (!database) {
+    return;
+  }
+
+  const { error } = await database
+    .from("bot_polls")
+    .update({ votes: Object.fromEntries(poll.votes) })
+    .eq("id", poll.id);
+
+  if (error) {
+    logError("Save poll votes", error);
+  }
+}
+
+function findOpenPoll(groupId, pollIdArg) {
+  if (pollIdArg) {
+    const poll = activePolls.get(pollIdArg.toUpperCase());
+    return poll && poll.groupId === groupId && poll.status === "open"
+      ? poll
+      : null;
+  }
+
+  let latest = null;
+
+  for (const poll of activePolls.values()) {
+    if (poll.groupId === groupId && poll.status === "open") {
+      if (!latest || poll.createdAt > latest.createdAt) {
+        latest = poll;
+      }
+    }
+  }
+
+  return latest;
+}
+
+async function loadOpenPolls() {
+  if (!database) {
+    return;
+  }
+
+  const { data, error } = await database
+    .from("bot_polls")
+    .select(
+      "id,group_id,question,options,votes,creator_jid,status,close_at,created_at"
+    )
+    .eq("status", "open");
+
+  if (error) {
+    logError("Load polls", error);
+    return;
+  }
+
+  for (const row of data || []) {
+    if (!ALLOWED_GROUPS.has(row.group_id)) {
+      continue;
+    }
+
+    const poll = {
+      id: row.id,
+      groupId: row.group_id,
+      question: row.question,
+      options: row.options,
+      votes: new Map(
+        Object.entries(row.votes || {}).map(([k, v]) => [k, Number(v)])
+      ),
+      creator: row.creator_jid,
+      status: row.status,
+      closeAt: new Date(row.close_at).getTime(),
+      createdAt: row.created_at,
+    };
+
+    activePolls.set(poll.id, poll);
+    schedulePollClose(poll);
+  }
+
+  logInfo(`Open polls loaded: ${activePolls.size}`);
+}
+
+// =====================================================
+// TRIVIA
+// =====================================================
+
+function triviaSystemInstruction() {
+  return `Kamu adalah generator soal trivia untuk grup WhatsApp Indonesia. Buat SATU soal trivia pengetahuan umum (campuran: sains, sejarah, geografi, hiburan, olahraga) dengan tingkat kesulitan sedang. Balas HANYA dalam format JSON persis seperti ini, tanpa markdown, tanpa komentar tambahan:
+{"question": "...", "options": ["...", "...", "...", "..."], "correctIndex": 0, "explanation": "..."}
+Aturan:
+- "options" harus berisi tepat 4 pilihan jawaban singkat.
+- "correctIndex" adalah index (0-3) dari jawaban yang benar di array "options".
+- "explanation" adalah penjelasan singkat 1-2 kalimat dalam Bahasa Indonesia.
+- Gunakan Bahasa Indonesia untuk semua teks.`;
+}
+
+async function generateTriviaQuestion() {
+  const result = await callGeminiOnce({
+    systemInstruction: triviaSystemInstruction(),
+    userText: "Buatkan satu soal trivia baru.",
+    json: true,
+  });
+
+  if (
+    !result ||
+    typeof result.question !== "string" ||
+    !Array.isArray(result.options) ||
+    result.options.length !== 4 ||
+    typeof result.correctIndex !== "number"
+  ) {
+    throw new Error("Trivia response tidak valid.");
+  }
+
+  return result;
+}
+
+async function addTriviaScore(groupId, userJid) {
+  if (!database) {
+    globalThis.__triviaRAM ||= new Map();
+    const key = statsKey(groupId, userJid);
+    const next = (globalThis.__triviaRAM.get(key) || 0) + 1;
+    globalThis.__triviaRAM.set(key, next);
+    return next;
+  }
+
+  const { data, error: selectError } = await database
+    .from("bot_trivia_scores")
+    .select("correct_count")
+    .eq("group_id", groupId)
+    .eq("user_jid", userJid)
+    .maybeSingle();
+
+  if (selectError) {
+    logError("Get trivia score", selectError);
+  }
+
+  const next = Number(data?.correct_count || 0) + 1;
+
+  const { error } = await database.from("bot_trivia_scores").upsert({
+    group_id: groupId,
+    user_jid: userJid,
+    correct_count: next,
+    updated_at: new Date().toISOString(),
+  });
+
+  if (error) {
+    logError("Add trivia score", error);
+  }
+
+  return next;
+}
+
+async function listTriviaScores(groupId) {
+  if (!database) {
+    const rows = [];
+
+    for (const [key, count] of globalThis.__triviaRAM || []) {
+      if (key.startsWith(`${groupId}:`)) {
+        rows.push({
+          user_jid: key.slice(groupId.length + 1),
+          correct_count: count,
+        });
+      }
+    }
+
+    return rows.sort((a, b) => b.correct_count - a.correct_count);
+  }
+
+  const { data, error } = await database
+    .from("bot_trivia_scores")
+    .select("user_jid,correct_count")
+    .eq("group_id", groupId)
+    .order("correct_count", { ascending: false })
+    .limit(10);
+
+  if (error) {
+    logError("List trivia scores", error);
+    return [];
+  }
+
+  return data || [];
+}
+
+function clearTriviaTimer(groupId) {
+  const timer = triviaTimers.get(groupId);
+
+  if (timer) {
+    clearTimeout(timer);
+  }
+
+  triviaTimers.delete(groupId);
+}
+
+function scheduleTriviaTimeout(groupId) {
+  clearTriviaTimer(groupId);
+
+  const timer = setTimeout(async () => {
+    const session = triviaSessions.get(groupId);
+
+    if (!session || session.answered) {
+      return;
+    }
+
+    triviaSessions.delete(groupId);
+
+    if (!activeSock) {
+      return;
+    }
+
+    try {
+      await activeSock.sendMessage(groupId, {
+        text: `⏰ *WAKTU HABIS*\n\nJawaban benar: *${
+          session.options[session.correctIndex]
+        }*\n\n${session.explanation}${FOOTER}`,
+      });
+    } catch (error) {
+      logError("Trivia timeout send", error);
+    }
+  }, TRIVIA_DURATION_MS);
+
+  triviaTimers.set(groupId, timer);
+}
+
+// =====================================================
 // GEMINI REST
 // =====================================================
 
@@ -980,6 +1582,7 @@ async function callGeminiGenerate({
   groupId,
   prompt,
   image = null,
+  audio = null,
 }) {
   const history = await loadAIHistory(groupId);
 
@@ -994,6 +1597,15 @@ async function callGeminiGenerate({
       inline_data: {
         mime_type: image.mimeType,
         data: image.base64,
+      },
+    });
+  }
+
+  if (audio?.base64 && audio?.mimeType) {
+    userParts.push({
+      inline_data: {
+        mime_type: audio.mimeType,
+        data: audio.base64,
       },
     });
   }
@@ -1061,7 +1673,11 @@ async function callGeminiGenerate({
       role: "user",
       parts: [
         {
-          text: image ? `[Gambar] ${prompt || "Jelaskan gambar ini."}` : prompt || "Halo",
+          text: image
+            ? `[Gambar] ${prompt || "Jelaskan gambar ini."}`
+            : audio
+            ? `[Audio] ${prompt || "Jelaskan audio ini."}`
+            : prompt || "Halo",
         },
       ],
     },
@@ -1078,6 +1694,119 @@ async function callGeminiGenerate({
   await saveAIHistory(groupId, newHistory);
 
   return answer;
+}
+
+// =====================================================
+// GEMINI ONE-SHOT (moderasi / trivia / summary)
+// =====================================================
+
+function extractJSONBlock(text) {
+  if (!text) {
+    return null;
+  }
+
+  const cleaned = text.replace(/```json/gi, "```").replace(/```/g, "").trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
+
+  const match = cleaned.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+
+  if (match) {
+    try {
+      return JSON.parse(match[0]);
+    } catch {}
+  }
+
+  return null;
+}
+
+async function callGeminiOnce({
+  systemInstruction,
+  userText,
+  image = null,
+  audio = null,
+  json = false,
+}) {
+  const parts = [
+    {
+      text: userText || "Halo",
+    },
+  ];
+
+  if (image?.base64 && image?.mimeType) {
+    parts.push({
+      inline_data: {
+        mime_type: image.mimeType,
+        data: image.base64,
+      },
+    });
+  }
+
+  if (audio?.base64 && audio?.mimeType) {
+    parts.push({
+      inline_data: {
+        mime_type: audio.mimeType,
+        data: audio.base64,
+      },
+    });
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    GEMINI_MODEL
+  )}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+
+  const generationConfig = {
+    temperature: 0.5,
+    topP: 0.9,
+    maxOutputTokens: 1500,
+  };
+
+  if (json) {
+    generationConfig.response_mime_type = "application/json";
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      system_instruction: {
+        parts: [
+          {
+            text: systemInstruction,
+          },
+        ],
+      },
+      contents: [
+        {
+          role: "user",
+          parts,
+        },
+      ],
+      generationConfig,
+    }),
+  });
+
+  const raw = await response.text();
+
+  let data;
+
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`Gemini invalid response: ${raw}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`Gemini API error ${response.status}: ${JSON.stringify(data)}`);
+  }
+
+  const text = extractGeminiText(data);
+
+  return json ? extractJSONBlock(text) : text;
 }
 
 // =====================================================
@@ -1138,6 +1867,67 @@ async function downloadImageAsBase64(sock, msg) {
   return {
     base64: Buffer.from(buffer).toString("base64"),
     mimeType: imageTarget.mimeType,
+  };
+}
+
+// =====================================================
+// AUDIO HANDLING
+// =====================================================
+
+function getAudioTarget(msg) {
+  const current = unwrapMessage(msg.message);
+
+  if (current?.audioMessage) {
+    return {
+      waMessage: msg,
+      mimeType: (current.audioMessage.mimetype || "audio/ogg").split(";")[0].trim(),
+    };
+  }
+
+  const context = getContextInfo(msg.message);
+  const quoted = unwrapMessage(context?.quotedMessage);
+
+  if (quoted?.audioMessage && context?.stanzaId) {
+    return {
+      waMessage: {
+        key: {
+          remoteJid: msg.key.remoteJid,
+          id: context.stanzaId,
+          participant: context.participant,
+          fromMe: false,
+        },
+        message: context.quotedMessage,
+      },
+      mimeType: (quoted.audioMessage.mimetype || "audio/ogg").split(";")[0].trim(),
+    };
+  }
+
+  return null;
+}
+
+async function downloadAudioAsBase64(sock, msg) {
+  const audioTarget = getAudioTarget(msg);
+
+  if (!audioTarget) {
+    return null;
+  }
+
+  let buffer;
+
+  try {
+    buffer = await downloadMediaMessage(audioTarget.waMessage, "buffer", {});
+  } catch (error) {
+    if (typeof sock.updateMediaMessage === "function") {
+      await sock.updateMediaMessage(audioTarget.waMessage).catch(() => {});
+      buffer = await downloadMediaMessage(audioTarget.waMessage, "buffer", {});
+    } else {
+      throw error;
+    }
+  }
+
+  return {
+    base64: Buffer.from(buffer).toString("base64"),
+    mimeType: audioTarget.mimeType,
   };
 }
 
@@ -1304,6 +2094,10 @@ async function backupDatabase(createdBy) {
     "bot_allowed_groups",
     "bot_owner_admins",
     "bot_backup_logs",
+    "bot_notes",
+    "bot_polls",
+    "bot_trivia_scores",
+    "bot_group_stats",
   ];
 
   const backup = {};
@@ -1435,6 +2229,20 @@ async function startWhatsApp() {
   await loadPendingReminders().catch((error) => {
     logError("Load pending reminders", error);
   });
+
+  await loadOpenPolls().catch((error) => {
+    logError("Load open polls", error);
+  });
+
+  await loadGroupStats().catch((error) => {
+    logError("Load group stats", error);
+  });
+
+  setInterval(() => {
+    flushGroupStats().catch((error) => {
+      logError("Flush group stats interval", error);
+    });
+  }, STATS_FLUSH_INTERVAL_MS);
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
@@ -1661,6 +2469,87 @@ async function startWhatsApp() {
         const senderIsAdmin = isAdmin(metadata, sender);
 
         // =================================================
+        // FLOOD / ANTI SPAM
+        // =================================================
+
+        if (!msg.key.fromMe && settings.antiSpam && !senderIsAdmin) {
+          const isFlood = recordFloodHit(`${jid}:${sender}`);
+
+          if (isFlood) {
+            const count = await addWarning(jid, sender);
+
+            try {
+              await sock.sendMessage(jid, {
+                delete: msg.key,
+              });
+            } catch (error) {
+              logError("Delete flood message", error);
+            }
+
+            await sock.sendMessage(jid, {
+              text: `🚫 *ANTI SPAM*\n\n${mentionText(
+                sender
+              )}, jangan kirim pesan terlalu cepat/beruntun.\n\n⚠️ Warning: ${count}/${WARNING_LIMIT}${FOOTER}`,
+              mentions: [sender],
+            });
+
+            continue;
+          }
+        }
+
+        // =================================================
+        // IMAGE MODERATION
+        // =================================================
+
+        if (
+          !msg.key.fromMe &&
+          settings.imgModeration &&
+          !senderIsAdmin &&
+          unwrapMessage(msg.message)?.imageMessage
+        ) {
+          try {
+            const flaggedImage = await downloadImageAsBase64(sock, msg);
+
+            if (flaggedImage) {
+              const verdict = await callGeminiOnce({
+                systemInstruction:
+                  'Kamu adalah moderator konten grup WhatsApp. Analisa gambar dan tentukan apakah mengandung konten NSFW, kekerasan grafis, atau konten sangat sensitif lainnya. Balas HANYA JSON: {"flag": true/false, "category": "...", "reason": "..."} tanpa markdown.',
+                userText: "Analisa gambar ini.",
+                image: flaggedImage,
+                json: true,
+              });
+
+              if (verdict?.flag) {
+                const count = await addWarning(jid, sender);
+
+                try {
+                  await sock.sendMessage(jid, {
+                    delete: msg.key,
+                  });
+                } catch (error) {
+                  logError("Delete flagged image", error);
+                }
+
+                await sock.sendMessage(jid, {
+                  text: `🚫 *MODERASI GAMBAR*\n\n${mentionText(
+                    sender
+                  )}, gambar dihapus karena terdeteksi: *${
+                    verdict.category || "konten tidak pantas"
+                  }*.\n\n${
+                    verdict.reason || ""
+                  }\n\n⚠️ Warning: ${count}/${WARNING_LIMIT}${FOOTER}`,
+                  mentions: [sender],
+                });
+
+                continue;
+              }
+            }
+          } catch (error) {
+            logError("Image moderation", error);
+          }
+        }
+
+        // =================================================
         // ANTI LINK
         // =================================================
 
@@ -1691,11 +2580,54 @@ async function startWhatsApp() {
           continue;
         }
 
+        // =================================================
+        // BAD WORD FILTER
+        // =================================================
+
+        const badWordHit =
+          !msg.key.fromMe && text && !senderIsAdmin
+            ? matchesBadWord(text, settings.badWords)
+            : null;
+
+        if (badWordHit) {
+          const count = await addWarning(jid, sender);
+
+          try {
+            await sock.sendMessage(jid, {
+              delete: msg.key,
+            });
+          } catch (error) {
+            logError("Delete bad word message", error);
+          }
+
+          await sock.sendMessage(jid, {
+            text: `🚫 *FILTER KATA*\n\n${mentionText(
+              sender
+            )}, pesan mengandung kata terlarang (*${badWordHit}*) dan sudah dihapus.\n\n⚠️ Warning: ${count}/${WARNING_LIMIT}${FOOTER}`,
+            mentions: [sender],
+          });
+
+          continue;
+        }
+
         if (!text) {
           continue;
         }
 
         logInfo(`MESSAGE | ${jid} | ${msg.pushName || sender}: ${text}`);
+
+        if (!msg.key.fromMe) {
+          bumpMessageStat(jid, sender);
+
+          if (!text.startsWith("!")) {
+            pushMessageLog(jid, {
+              sender,
+              pushName: msg.pushName,
+              text,
+              at: Date.now(),
+            });
+          }
+        }
 
         // =================================================
         // DELETE / CLEAR MESSAGE
@@ -2261,7 +3193,7 @@ async function startWhatsApp() {
           await sock.sendMessage(
             jid,
             {
-              text: `🤖 *${BOT_NAME} MENU*\n\n━━━━━━━━━━━━━━━━━━\n\n*UMUM*\n\n🏓 !ping\nCek status bot\n\n👋 !halo\nSapa bot\n\n📊 !info\nInformasi grup\n\n🧠 !ai pertanyaan\nTanya ${BOT_NAME}\n\n🗑 !resetai\nReset konteks AI\n\n👑 !owner\nMenu owner\n\n━━━━━━━━━━━━━━━━━━\n\n*REMINDER*\n\n⏰ !remind 10m pesan\n⏰ !remind 2h pesan\n⏰ !remind 20:30 pesan\n📋 !reminders\n🗑 !delremind ID\n\n━━━━━━━━━━━━━━━━━━\n\n*GAMBAR*\n\nKirim gambar dengan caption:\n!ai jelaskan gambar ini\n\nAtau reply gambar lalu:\n!ai ini gambar apa?\n\n━━━━━━━━━━━━━━━━━━\n\n*ADMIN*\n\n🛡️ !admin\nLihat menu admin\n\n🧠 Model: ${GEMINI_MODEL}${FOOTER}`,
+              text: `🤖 *${BOT_NAME} MENU*\n\n━━━━━━━━━━━━━━━━━━\n\n*UMUM*\n\n🏓 !ping\nCek status bot\n\n👋 !halo\nSapa bot\n\n📊 !info\nInformasi grup\n\n🧠 !ai pertanyaan\nTanya ${BOT_NAME}\n\n🗑 !resetai\nReset konteks AI\n\n📝 !summary [jumlah]\nRangkum chat terakhir\n\n🎙️ !transkrip\nReply voice note untuk transkrip\n\n📈 !stats\nStatistik member paling aktif\n\n👑 !owner\nMenu owner\n\n━━━━━━━━━━━━━━━━━━\n\n*REMINDER*\n\n⏰ !remind 10m pesan\n⏰ !remind 2h pesan\n⏰ !remind 20:30 pesan\n📋 !reminders\n🗑 !delremind ID\n\n━━━━━━━━━━━━━━━━━━\n\n*CATATAN*\n\n🗒️ !note add isi\n🗒️ !note list\n🗒️ !note view ID\n🗒️ !note del ID\n\n━━━━━━━━━━━━━━━━━━\n\n*POLLING & GAME*\n\n📊 !poll Pertanyaan?\\nOpsi1\\nOpsi2\n🗳️ !vote nomor\n📊 !pollclose\n\n🎯 !trivia\n✅ !jawab A/B/C/D\n🏆 !triviascore\n\n━━━━━━━━━━━━━━━━━━\n\n*GAMBAR & AUDIO*\n\nKirim gambar dengan caption:\n!ai jelaskan gambar ini\n\nAtau reply gambar lalu:\n!ai ini gambar apa?\n\nReply voice note lalu:\n!transkrip\n\n━━━━━━━━━━━━━━━━━━\n\n*ADMIN*\n\n🛡️ !admin\nLihat menu admin\n\n🧠 Model: ${GEMINI_MODEL}${FOOTER}`,
             },
             {
               quoted: msg,
@@ -2275,7 +3207,7 @@ async function startWhatsApp() {
           await sock.sendMessage(
             jid,
             {
-              text: `🛡️ *${BOT_NAME} ADMIN COMMANDS*\n\n━━━━━━━━━━━━━━━━━━\n\n👋 !welcome on\n👋 !welcome off\n\n🚫 !antilink on\n🚫 !antilink off\n\n🧠 !aibot on\n🧠 !aibot off\n\n📢 !tagall [pesan]\n\n🗑 !del\nReply pesan lalu hapus pesan tersebut\n\n⚠️ !warn @user [alasan]\n✅ !unwarn @user\n📋 !warnings\n\n👢 !kick @user\n⬆️ !promote @user\n⬇️ !demote @user\n\n━━━━━━━━━━━━━━━━━━\n\n⚠️ Hapus pesan, kick, promote, demote, dan anti-link delete membutuhkan akun bot menjadi admin grup.${FOOTER}`,
+              text: `🛡️ *${BOT_NAME} ADMIN COMMANDS*\n\n━━━━━━━━━━━━━━━━━━\n\n👋 !welcome on\n👋 !welcome off\n\n🚫 !antilink on\n🚫 !antilink off\n\n🧠 !aibot on\n🧠 !aibot off\n\n🚫 !antispam on\n🚫 !antispam off\n\n🖼️ !imgmod on\n🖼️ !imgmod off\n\n🚫 !badword add/remove/list\n\n📈 !statsreset\n\n📢 !tagall [pesan]\n\n🗑 !del\nReply pesan lalu hapus pesan tersebut\n\n⚠️ !warn @user [alasan]\n✅ !unwarn @user\n📋 !warnings\n\n👢 !kick @user\n⬆️ !promote @user\n⬇️ !demote @user\n\n━━━━━━━━━━━━━━━━━━\n\n⚠️ Hapus pesan, kick, promote, demote, anti-link, anti-spam, badword, dan moderasi gambar membutuhkan akun bot menjadi admin grup.${FOOTER}`,
             },
             {
               quoted: msg,
@@ -2293,12 +3225,548 @@ async function startWhatsApp() {
           await sock.sendMessage(
             jid,
             {
-              text: `📊 *INFORMASI GRUP*\n\n📛 Nama:\n${metadata.subject}\n\n👥 Member:\n${metadata.participants.length}\n\n🆔 Group ID:\n${jid}\n\n🤖 Bot:\n${BOT_NAME} Online ✅\n\n🧠 AI:\n${settings.aiEnabled ? "ON ✅" : "OFF ❌"}\n\n👋 Welcome:\n${settings.welcome ? "ON ✅" : "OFF ❌"}\n\n🚫 Anti-link:\n${settings.antiLink ? "ON ✅" : "OFF ❌"}\n\n⏰ Reminder aktif:\n${activeReminderCount}\n\n💾 Database:\n${database ? "ON ✅" : "OFF ❌"}${FOOTER}`,
+              text: `📊 *INFORMASI GRUP*\n\n📛 Nama:\n${metadata.subject}\n\n👥 Member:\n${metadata.participants.length}\n\n🆔 Group ID:\n${jid}\n\n🤖 Bot:\n${BOT_NAME} Online ✅\n\n🧠 AI:\n${settings.aiEnabled ? "ON ✅" : "OFF ❌"}\n\n👋 Welcome:\n${settings.welcome ? "ON ✅" : "OFF ❌"}\n\n🚫 Anti-link:\n${settings.antiLink ? "ON ✅" : "OFF ❌"}\n\n🚫 Anti-spam:\n${settings.antiSpam ? "ON ✅" : "OFF ❌"}\n\n🖼️ Moderasi gambar:\n${settings.imgModeration ? "ON ✅" : "OFF ❌"}\n\n⏰ Reminder aktif:\n${activeReminderCount}\n\n💾 Database:\n${database ? "ON ✅" : "OFF ❌"}${FOOTER}`,
             },
             {
               quoted: msg,
             }
           );
+
+          continue;
+        }
+
+        // =================================================
+        // STATS
+        // =================================================
+
+        if (command === "!stats") {
+          const rows = listTopStats(jid, 10);
+
+          await sock.sendMessage(
+            jid,
+            {
+              text: rows.length
+                ? `📈 *STATISTIK GRUP*\n\n${rows
+                    .map(
+                      (row, i) =>
+                        `${i + 1}. ${mentionText(row.userJid)} — ${row.count} pesan`
+                    )
+                    .join("\n")}${FOOTER}`
+                : `Belum ada data statistik.${FOOTER}`,
+              mentions: rows.map((row) => row.userJid),
+            },
+            {
+              quoted: msg,
+            }
+          );
+
+          continue;
+        }
+
+        if (command === "!statsreset") {
+          if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
+
+          await resetGroupStats(jid);
+
+          await sock.sendMessage(
+            jid,
+            {
+              text: `✅ Statistik grup sudah direset.${FOOTER}`,
+            },
+            {
+              quoted: msg,
+            }
+          );
+
+          continue;
+        }
+
+        // =================================================
+        // NOTES
+        // =================================================
+
+        if (command.startsWith("!note")) {
+          const parts = text.trim().split(/\s+/);
+          const action = parts[1]?.toLowerCase();
+
+          if (!action || action === "help") {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🗒️ *NOTE HELP*\n\n!note add isi catatan\n!note list\n!note view ID\n!note del ID${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (action === "add") {
+            const content = text.replace(/^!note\s+add\s*/i, "").trim();
+
+            if (!content) {
+              await sock.sendMessage(
+                jid,
+                {
+                  text: `Format: !note add isi catatan${FOOTER}`,
+                },
+                {
+                  quoted: msg,
+                }
+              );
+
+              continue;
+            }
+
+            const note = await addNote(jid, content, sender);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `✅ Catatan disimpan.\n\n🆔 ID: ${note.id}${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (action === "list") {
+            const notes = await listNotes(jid);
+
+            const body = notes.length
+              ? notes
+                  .map(
+                    (note, i) =>
+                      `${i + 1}. *${note.id}* — ${note.content.slice(0, 40)}${
+                        note.content.length > 40 ? "…" : ""
+                      }`
+                  )
+                  .join("\n")
+              : "Belum ada catatan.";
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🗒️ *NOTE LIST*\n\n${body}${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (action === "view") {
+            const id = parts[2]?.toUpperCase();
+            const note = id ? await getNote(jid, id) : null;
+
+            if (!note) {
+              await sock.sendMessage(
+                jid,
+                {
+                  text: `❌ Catatan tidak ditemukan.${FOOTER}`,
+                },
+                {
+                  quoted: msg,
+                }
+              );
+
+              continue;
+            }
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🗒️ *${note.id}*\n\n${note.content}${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (action === "del" || action === "delete") {
+            const id = parts[2]?.toUpperCase();
+            const note = id ? await getNote(jid, id) : null;
+
+            if (!note) {
+              await sock.sendMessage(
+                jid,
+                {
+                  text: `❌ Catatan tidak ditemukan.${FOOTER}`,
+                },
+                {
+                  quoted: msg,
+                }
+              );
+
+              continue;
+            }
+
+            if (!sameUser(note.creator, sender) && !senderIsAdmin) {
+              await sock.sendMessage(
+                jid,
+                {
+                  text: `⛔ Hanya pembuat catatan atau admin yang bisa menghapusnya.${FOOTER}`,
+                },
+                {
+                  quoted: msg,
+                }
+              );
+
+              continue;
+            }
+
+            await deleteNote(jid, id);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `✅ Catatan ${id} dihapus.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          await sock.sendMessage(
+            jid,
+            {
+              text: `❌ Action tidak dikenal.\n\nGunakan:\n!note help\n\n${BOT_CREDIT}`,
+            },
+            {
+              quoted: msg,
+            }
+          );
+
+          continue;
+        }
+
+        // =================================================
+        // POLL
+        // =================================================
+
+        if (command.startsWith("!pollclose")) {
+          const parts = text.trim().split(/\s+/);
+          const pollIdArg = parts[1];
+
+          const poll = pollIdArg
+            ? activePolls.get(pollIdArg.toUpperCase())
+            : findOpenPoll(jid, null);
+
+          if (!poll || poll.groupId !== jid || poll.status !== "open") {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Polling tidak ditemukan.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (!sameUser(poll.creator, sender) && !senderIsAdmin) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⛔ Hanya pembuat polling atau admin yang bisa menutup polling.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          clearPollTimer(poll.id);
+          poll.status = "closed";
+          activePolls.set(poll.id, poll);
+          await markPollStatus(poll.id, "closed");
+
+          const { lines, totalVotes } = formatPollResult(poll);
+
+          await sock.sendMessage(
+            jid,
+            {
+              text: `📊 *POLLING DITUTUP*\n\n❓ ${poll.question}\n\n${lines}\n\nTotal suara: ${totalVotes}${FOOTER}`,
+            },
+            {
+              quoted: msg,
+            }
+          );
+
+          continue;
+        }
+
+        if (/^!poll(\s|$)/i.test(text)) {
+          const raw = text.replace(/^!poll\s*/i, "").trim();
+          const lines = raw
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean);
+
+          const question = lines[0];
+          const options = lines.slice(1, 9);
+
+          if (!question || options.length < 2) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Format polling salah.\n\nContoh:\n!poll Makan apa hari ini?\nNasi goreng\nMie ayam\nSoto${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          const id = pollId();
+
+          const poll = {
+            id,
+            groupId: jid,
+            question,
+            options,
+            votes: new Map(),
+            creator: sender,
+            status: "open",
+            closeAt: Date.now() + POLL_DEFAULT_DURATION_MS,
+            createdAt: new Date().toISOString(),
+          };
+
+          await savePoll(poll);
+
+          const optionsText = options
+            .map((opt, i) => `${i + 1}. ${opt}`)
+            .join("\n");
+
+          await sock.sendMessage(
+            jid,
+            {
+              text: `📊 *POLLING BARU*\n\n❓ ${question}\n\n${optionsText}\n\n🗳️ Vote: !vote <nomor>\n⏱️ Berakhir dalam ${Math.round(
+                POLL_DEFAULT_DURATION_MS / 60000
+              )} menit\n🆔 ID: ${id}${FOOTER}`,
+            },
+            {
+              quoted: msg,
+            }
+          );
+
+          continue;
+        }
+
+        if (command.startsWith("!vote")) {
+          const parts = text.trim().split(/\s+/);
+          const optionNum = Number(parts[1]);
+          const pollIdArg = parts[2];
+
+          const poll = findOpenPoll(jid, pollIdArg);
+
+          if (!poll) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Tidak ada polling aktif.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (!optionNum || optionNum < 1 || optionNum > poll.options.length) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Nomor opsi tidak valid.\n\nContoh: !vote 1${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          poll.votes.set(sender, optionNum - 1);
+          activePolls.set(poll.id, poll);
+          await saveVotes(poll);
+
+          await sock.sendMessage(
+            jid,
+            {
+              text: `✅ Vote kamu tercatat: *${poll.options[optionNum - 1]}*${FOOTER}`,
+            },
+            {
+              quoted: msg,
+            }
+          );
+
+          continue;
+        }
+
+        // =================================================
+        // TRIVIA
+        // =================================================
+
+        if (command === "!trivia") {
+          if (!settings.aiEnabled) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🔇 ${BOT_NAME} sedang dinonaktifkan oleh admin grup.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (triviaSessions.has(jid)) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⚠️ Masih ada trivia aktif. Jawab dulu dengan !jawab A/B/C/D.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          try {
+            const trivia = await generateTriviaQuestion();
+            const letters = ["A", "B", "C", "D"];
+
+            triviaSessions.set(jid, {
+              ...trivia,
+              answered: false,
+              startedBy: sender,
+            });
+
+            scheduleTriviaTimeout(jid);
+
+            const optionsText = trivia.options
+              .map((opt, i) => `${letters[i]}. ${opt}`)
+              .join("\n");
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🎯 *TRIVIA*\n\n${trivia.question}\n\n${optionsText}\n\n⏱️ Jawab dalam ${Math.round(
+                  TRIVIA_DURATION_MS / 1000
+                )} detik dengan !jawab A/B/C/D${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          } catch (error) {
+            logError("Trivia generate", error);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⚠️ Gagal membuat soal trivia. Coba lagi.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          }
+
+          continue;
+        }
+
+        if (/^!jawab\s+[abcd]$/i.test(text)) {
+          const session = triviaSessions.get(jid);
+
+          if (!session || session.answered) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Tidak ada trivia aktif. Ketik !trivia untuk mulai.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          const letters = ["a", "b", "c", "d"];
+          const chosen = letters.indexOf(text.trim().slice(-1).toLowerCase());
+
+          if (chosen === session.correctIndex) {
+            session.answered = true;
+            triviaSessions.delete(jid);
+            clearTriviaTimer(jid);
+
+            const score = await addTriviaScore(jid, sender);
+
+            await sock.sendMessage(jid, {
+              text: `🎉 *BENAR!*\n\n${mentionText(
+                sender
+              )} menjawab dengan benar!\n\n${
+                session.explanation
+              }\n\n🏆 Total menang: ${score}${FOOTER}`,
+              mentions: [sender],
+            });
+          } else {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Salah, coba lagi!${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          }
+
+          continue;
+        }
+
+        if (command === "!triviascore") {
+          const rows = await listTriviaScores(jid);
+
+          await sock.sendMessage(jid, {
+            text: rows.length
+              ? `🏆 *TRIVIA LEADERBOARD*\n\n${rows
+                  .map(
+                    (row, i) =>
+                      `${i + 1}. ${mentionText(row.user_jid)} — ${
+                        row.correct_count
+                      } menang`
+                  )
+                  .join("\n")}${FOOTER}`
+              : `Belum ada yang menang trivia.${FOOTER}`,
+            mentions: rows.map((row) => row.user_jid),
+          });
 
           continue;
         }
@@ -2436,10 +3904,12 @@ async function startWhatsApp() {
         // ADMIN SETTINGS
         // =================================================
 
-        if (/^!(welcome|antilink|aibot)\s+(on|off)$/i.test(text)) {
+        if (/^!(welcome|antilink|aibot|antispam|imgmod)\s+(on|off)$/i.test(text)) {
           if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
 
-          const match = text.match(/^!(welcome|antilink|aibot)\s+(on|off)$/i);
+          const match = text.match(
+            /^!(welcome|antilink|aibot|antispam|imgmod)\s+(on|off)$/i
+          );
           const key = match[1].toLowerCase();
           const enabled = match[2].toLowerCase() === "on";
 
@@ -2455,12 +3925,141 @@ async function startWhatsApp() {
             await setGroupSetting(jid, "aiEnabled", enabled);
           }
 
+          if (key === "antispam") {
+            await setGroupSetting(jid, "antiSpam", enabled);
+          }
+
+          if (key === "imgmod") {
+            await setGroupSetting(jid, "imgModeration", enabled);
+          }
+
           await sock.sendMessage(
             jid,
             {
               text: `✅ ${key.toUpperCase()} sekarang *${
                 enabled ? "ON" : "OFF"
               }*.${FOOTER}`,
+            },
+            {
+              quoted: msg,
+            }
+          );
+
+          continue;
+        }
+
+        // =================================================
+        // BAD WORD FILTER MANAGEMENT
+        // =================================================
+
+        if (command.startsWith("!badword")) {
+          if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
+
+          const parts = text.trim().split(/\s+/);
+          const action = parts[1]?.toLowerCase();
+          const word = parts.slice(2).join(" ").toLowerCase();
+
+          if (!action || action === "help") {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🚫 *BADWORD HELP*\n\n!badword add kata\n!badword remove kata\n!badword list${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (action === "list") {
+            const list = (settings.badWords || [])
+              .map((w, i) => `${i + 1}. ${w}`)
+              .join("\n");
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🚫 *BAD WORD LIST*\n\n${
+                  list || "Belum ada kata terlarang."
+                }${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (action === "add") {
+            if (!word) {
+              await sock.sendMessage(
+                jid,
+                {
+                  text: `Format: !badword add kata${FOOTER}`,
+                },
+                {
+                  quoted: msg,
+                }
+              );
+
+              continue;
+            }
+
+            const words = new Set(settings.badWords || []);
+            words.add(word);
+            await setGroupSetting(jid, "badWords", [...words]);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `✅ Kata *${word}* ditambahkan ke filter.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          if (action === "remove") {
+            if (!word) {
+              await sock.sendMessage(
+                jid,
+                {
+                  text: `Format: !badword remove kata${FOOTER}`,
+                },
+                {
+                  quoted: msg,
+                }
+              );
+
+              continue;
+            }
+
+            const words = (settings.badWords || []).filter((w) => w !== word);
+            await setGroupSetting(jid, "badWords", words);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `✅ Kata *${word}* dihapus dari filter.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          await sock.sendMessage(
+            jid,
+            {
+              text: `❌ Action tidak dikenal.\n\nGunakan:\n!badword help\n\n${BOT_CREDIT}`,
             },
             {
               quoted: msg,
@@ -2638,6 +4237,203 @@ async function startWhatsApp() {
         }
 
         // =================================================
+        // SUMMARY
+        // =================================================
+
+        if (command === "!summary" || command.startsWith("!summary ")) {
+          if (!settings.aiEnabled) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🔇 ${BOT_NAME} sedang dinonaktifkan oleh admin grup.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          const summaryCooldownKey = `${jid}:${sender}`;
+          const summaryLast = aiCooldown.get(summaryCooldownKey) || 0;
+
+          if (!msg.key.fromMe && Date.now() - summaryLast < AI_COOLDOWN_MS) {
+            const remaining = Math.ceil(
+              (AI_COOLDOWN_MS - (Date.now() - summaryLast)) / 1000
+            );
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⏳ Tunggu ${remaining} detik sebelum pakai AI lagi.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          const requested = Number(text.replace(/^!summary\s*/i, "").trim());
+          const count =
+            Number.isFinite(requested) && requested > 0
+              ? Math.min(requested, SUMMARY_MAX_COUNT)
+              : SUMMARY_DEFAULT_COUNT;
+
+          const log = (messageLog.get(jid) || []).slice(-count);
+
+          if (!log.length) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Belum ada cukup riwayat chat untuk dirangkum.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          aiCooldown.set(summaryCooldownKey, Date.now());
+
+          const transcript = log
+            .map((entry) => `${entry.pushName || entry.sender}: ${entry.text}`)
+            .join("\n");
+
+          try {
+            const summary = await callGeminiOnce({
+              systemInstruction:
+                "Kamu adalah asisten yang merangkum percakapan grup WhatsApp dalam Bahasa Indonesia. Buat rangkuman singkat berupa poin-poin (bullet) mengenai topik utama, keputusan, dan hal penting. Maksimal 10 poin.",
+              userText: `Rangkum percakapan berikut:\n\n${transcript}`,
+            });
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `📝 *RANGKUMAN CHAT* (${log.length} pesan terakhir)\n\n${
+                  summary || "Tidak ada rangkuman."
+                }${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          } catch (error) {
+            logError("Summary", error);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⚠️ Gagal membuat rangkuman. Coba lagi.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          }
+
+          continue;
+        }
+
+        // =================================================
+        // TRANSKRIP VOICE NOTE
+        // =================================================
+
+        if (command === "!transkrip" || command === "!transcribe") {
+          if (!settings.aiEnabled) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `🔇 ${BOT_NAME} sedang dinonaktifkan oleh admin grup.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          const transkripCooldownKey = `${jid}:${sender}`;
+          const transkripLast = aiCooldown.get(transkripCooldownKey) || 0;
+
+          if (!msg.key.fromMe && Date.now() - transkripLast < AI_COOLDOWN_MS) {
+            const remaining = Math.ceil(
+              (AI_COOLDOWN_MS - (Date.now() - transkripLast)) / 1000
+            );
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⏳ Tunggu ${remaining} detik sebelum pakai AI lagi.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+
+            continue;
+          }
+
+          try {
+            const audio = await downloadAudioAsBase64(sock, msg);
+
+            if (!audio) {
+              await sock.sendMessage(
+                jid,
+                {
+                  text: `❌ Reply voice note yang mau ditranskrip, lalu ketik *!transkrip*.${FOOTER}`,
+                },
+                {
+                  quoted: msg,
+                }
+              );
+
+              continue;
+            }
+
+            aiCooldown.set(transkripCooldownKey, Date.now());
+
+            const transcript = await callGeminiOnce({
+              systemInstruction:
+                "Kamu adalah alat transkripsi audio ke teks. Transkripsikan audio berikut ke teks Bahasa Indonesia (atau bahasa aslinya) apa adanya, tanpa komentar tambahan.",
+              userText: "Transkripsikan audio ini.",
+              audio,
+            });
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `📝 *TRANSKRIP*\n\n${
+                  transcript || "Tidak ada hasil transkrip."
+                }${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          } catch (error) {
+            logError("Transkrip", error);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⚠️ Gagal transkrip audio. Coba lagi.${FOOTER}`,
+              },
+              {
+                quoted: msg,
+              }
+            );
+          }
+
+          continue;
+        }
+
+        // =================================================
         // AI TEXT / IMAGE
         // =================================================
 
@@ -2710,9 +4506,12 @@ async function startWhatsApp() {
 
         try {
           const image = await downloadImageAsBase64(sock, msg);
+          const audio = !image ? await downloadAudioAsBase64(sock, msg) : null;
 
           const prompt = image
             ? question || "Jelaskan isi gambar ini secara singkat dan jelas."
+            : audio
+            ? question || "Transkripsikan dan jelaskan isi audio ini."
             : question || "Halo";
 
           const answer = await callGeminiGenerate({
@@ -2720,6 +4519,7 @@ async function startWhatsApp() {
             groupId: jid,
             prompt,
             image,
+            audio,
           });
 
           await sock.sendMessage(
