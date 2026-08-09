@@ -31,7 +31,23 @@ const ALLOWED_GROUPS = new Set([
   "120363412266032657@g.us",
 ]);
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const AI_BASE_URL = (
+  process.env.AI_BASE_URL ||
+  "https://generativelanguage.googleapis.com/v1beta"
+).replace(/\/+$/, "");
+
+const AI_API_KEY = (
+  process.env.AI_API_KEY ||
+  process.env.GEMINI_API_KEY ||
+  ""
+).trim();
+
+const AI_MODEL =
+  process.env.AI_MODEL ||
+  process.env.GEMINI_MODEL ||
+  "gemini-3.6-flash";
+
+const GEMINI_MODEL = AI_MODEL;
 
 const AUTH_DIR =
   process.env.AUTH_DIR ||
@@ -60,8 +76,8 @@ const SUMMARY_DEFAULT_COUNT = 50;
 const SUMMARY_MAX_COUNT = 150;
 const MESSAGE_LOG_LIMIT = 200;
 
-if (!process.env.GEMINI_API_KEY) {
-  console.error("❌ GEMINI_API_KEY tidak ditemukan di .env");
+if (!AI_API_KEY) {
+  console.error("❌ AI_API_KEY / GEMINI_API_KEY tidak ditemukan di .env");
   process.exit(1);
 }
 
@@ -1618,14 +1634,15 @@ async function callGeminiGenerate({
     },
   ];
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    GEMINI_MODEL
-  )}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const url = `${AI_BASE_URL}/models/${encodeURIComponent(
+    AI_MODEL
+  )}:generateContent?key=${encodeURIComponent(AI_API_KEY)}`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "x-goog-api-key": AI_API_KEY,
     },
     body: JSON.stringify({
       system_instruction: {
@@ -1753,9 +1770,9 @@ async function callGeminiOnce({
     });
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    GEMINI_MODEL
-  )}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
+  const url = `${AI_BASE_URL}/models/${encodeURIComponent(
+    AI_MODEL
+  )}:generateContent?key=${encodeURIComponent(AI_API_KEY)}`;
 
   const generationConfig = {
     temperature: 0.5,
@@ -1771,6 +1788,7 @@ async function callGeminiOnce({
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "x-goog-api-key": AI_API_KEY,
     },
     body: JSON.stringify({
       system_instruction: {
@@ -1804,9 +1822,70 @@ async function callGeminiOnce({
     throw new Error(`Gemini API error ${response.status}: ${JSON.stringify(data)}`);
   }
 
-  const text = extractGeminiText(data);
-
   return json ? extractJSONBlock(text) : text;
+}
+
+// =====================================================
+// AI IMAGE GENERATION & EDITING
+// =====================================================
+
+async function generateAIImage({ prompt, image = null }) {
+  let visualPrompt = prompt;
+
+  if (image?.base64) {
+    try {
+      const editDescription = await callGeminiOnce({
+        systemInstruction:
+          "You are an expert image editing assistant. Analyze the input image and the user's edit instruction. Write a single detailed English paragraph describing what the newly modified visual scene should look like. Do not include preamble, quotes, or meta commentary.",
+        userText: `Edit instruction: ${prompt}`,
+        image,
+      });
+
+      if (
+        editDescription &&
+        typeof editDescription === "string" &&
+        editDescription.length > 10
+      ) {
+        visualPrompt = editDescription.trim();
+      }
+    } catch (err) {
+      logWarn("Gemini Vision Edit Prompt fallback", err.message);
+    }
+  }
+
+  const seed = Math.floor(Math.random() * 10000000);
+  const encodedPrompt = encodeURIComponent(visualPrompt);
+
+  const primaryUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&model=flux`;
+  const fallbackUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&model=turbo`;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+
+    const res = await fetch(primaryUrl, { signal: controller.signal });
+    clearTimeout(timer);
+
+    if (res.ok) {
+      const arrayBuf = await res.arrayBuffer();
+      return Buffer.from(arrayBuf);
+    }
+  } catch (err) {
+    logWarn("Primary image generator failed, trying fallback...", err.message);
+  }
+
+  const controllerFB = new AbortController();
+  const timerFB = setTimeout(() => controllerFB.abort(), 25000);
+
+  const resFB = await fetch(fallbackUrl, { signal: controllerFB.signal });
+  clearTimeout(timerFB);
+
+  if (resFB.ok) {
+    const arrayBuf = await resFB.arrayBuffer();
+    return Buffer.from(arrayBuf);
+  }
+
+  throw new Error("Gagal membuat gambar dari server AI");
 }
 
 // =====================================================
@@ -3193,7 +3272,7 @@ async function startWhatsApp() {
           await sock.sendMessage(
             jid,
             {
-              text: `🤖 *${BOT_NAME} MENU*\n\n━━━━━━━━━━━━━━━━━━\n\n*UMUM*\n\n🏓 !ping\nCek status bot\n\n👋 !halo\nSapa bot\n\n📊 !info\nInformasi grup\n\n🧠 !ai pertanyaan\nTanya ${BOT_NAME}\n\n🗑 !resetai\nReset konteks AI\n\n📝 !summary [jumlah]\nRangkum chat terakhir\n\n🎙️ !transkrip\nReply voice note untuk transkrip\n\n📈 !stats\nStatistik member paling aktif\n\n👑 !owner\nMenu owner\n\n━━━━━━━━━━━━━━━━━━\n\n*REMINDER*\n\n⏰ !remind 10m pesan\n⏰ !remind 2h pesan\n⏰ !remind 20:30 pesan\n📋 !reminders\n🗑 !delremind ID\n\n━━━━━━━━━━━━━━━━━━\n\n*CATATAN*\n\n🗒️ !note add isi\n🗒️ !note list\n🗒️ !note view ID\n🗒️ !note del ID\n\n━━━━━━━━━━━━━━━━━━\n\n*POLLING & GAME*\n\n📊 !poll Pertanyaan?\\nOpsi1\\nOpsi2\n🗳️ !vote nomor\n📊 !pollclose\n\n🎯 !trivia\n✅ !jawab A/B/C/D\n🏆 !triviascore\n\n━━━━━━━━━━━━━━━━━━\n\n*GAMBAR & AUDIO*\n\nKirim gambar dengan caption:\n!ai jelaskan gambar ini\n\nAtau reply gambar lalu:\n!ai ini gambar apa?\n\nReply voice note lalu:\n!transkrip\n\n━━━━━━━━━━━━━━━━━━\n\n*ADMIN*\n\n🛡️ !admin\nLihat menu admin\n\n🧠 Model: ${GEMINI_MODEL}${FOOTER}`,
+              text: `🤖 *${BOT_NAME} MENU*\n\n━━━━━━━━━━━━━━━━━━\n\n*UMUM*\n\n🏓 !ping\nCek status bot\n\n👋 !halo\nSapa bot\n\n📊 !info\nInformasi grup\n\n🧠 !ai pertanyaan\nTanya ${BOT_NAME}\n\n🎨 !draw deskripsi\nBuat gambar dengan AI\n\n🖼️ !editgambar instruksi\nReply gambar untuk edit dengan AI\n\n🗑 !resetai\nReset konteks AI\n\n📝 !summary [jumlah]\nRangkum chat terakhir\n\n🎙️ !transkrip\nReply voice note untuk transkrip\n\n📈 !stats\nStatistik member paling aktif\n\n👑 !owner\nMenu owner\n\n━━━━━━━━━━━━━━━━━━\n\n*REMINDER*\n\n⏰ !remind 10m pesan\n⏰ !remind 2h pesan\n⏰ !remind 20:30 pesan\n📋 !reminders\n🗑 !delremind ID\n\n━━━━━━━━━━━━━━━━━━\n\n*CATATAN*\n\n🗒️ !note add isi\n🗒️ !note list\n🗒️ !note view ID\n🗒️ !note del ID\n\n━━━━━━━━━━━━━━━━━━\n\n*POLLING & GAME*\n\n📊 !poll Pertanyaan?\\nOpsi1\\nOpsi2\n🗳️ !vote nomor\n📊 !pollclose\n\n🎯 !trivia\n✅ !jawab A/B/C/D\n🏆 !triviascore\n\n━━━━━━━━━━━━━━━━━━\n\n*GAMBAR & AUDIO*\n\n🎨 !draw kucing astronot cyberpunk\nBuat gambar baru dari teks\n\n🖼️ Reply gambar + !editgambar ubah jadi gaya anime\nEdit gambar dengan instruksi AI\n\nKirim gambar dengan caption:\n!ai jelaskan gambar ini\n\nReply voice note lalu:\n!transkrip\n\n━━━━━━━━━━━━━━━━━━\n\n*ADMIN*\n\n🛡️ !admin\nLihat menu admin\n\n🧠 Model: ${GEMINI_MODEL}${FOOTER}`,
             },
             {
               quoted: msg,
@@ -4427,6 +4506,179 @@ async function startWhatsApp() {
               {
                 quoted: msg,
               }
+            );
+          }
+
+          continue;
+        }
+
+        // =================================================
+        // GENERATE & EDIT IMAGE
+        // =================================================
+
+        if (
+          command === "!draw" ||
+          command.startsWith("!draw ") ||
+          command === "!gambar" ||
+          command.startsWith("!gambar ") ||
+          command === "!buatgambar" ||
+          command.startsWith("!buatgambar ") ||
+          command === "!generateimage" ||
+          command.startsWith("!generateimage ")
+        ) {
+          let prompt = text
+            .replace(/^!(draw|gambar|buatgambar|generateimage)\s*/i, "")
+            .trim();
+
+          const image = await downloadImageAsBase64(sock, msg);
+
+          if (!prompt && !image) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Berikan deskripsi gambar.\n\nContoh:\n*!draw kucing astronot di angkasa, gaya cyberpunk*${FOOTER}`,
+              },
+              { quoted: msg }
+            );
+            continue;
+          }
+
+          if (!prompt && image) {
+            prompt = "Ubah atau buat variasi menarik dari gambar ini";
+          }
+
+          const cooldownKey = `img:${jid}:${sender}`;
+          const last = aiCooldown.get(cooldownKey) || 0;
+
+          if (!msg.key.fromMe && Date.now() - last < AI_COOLDOWN_MS) {
+            const remaining = Math.ceil(
+              (AI_COOLDOWN_MS - (Date.now() - last)) / 1000
+            );
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⏳ Tunggu ${remaining} detik sebelum membuat gambar lagi.${FOOTER}`,
+              },
+              { quoted: msg }
+            );
+            continue;
+          }
+
+          aiCooldown.set(cooldownKey, Date.now());
+
+          try {
+            await sock.sendMessage(jid, {
+              react: {
+                text: "🎨",
+                key: msg.key,
+              },
+            });
+          } catch {}
+
+          try {
+            const imageBuffer = await generateAIImage({ prompt, image });
+
+            await sock.sendMessage(
+              jid,
+              {
+                image: imageBuffer,
+                caption: `🎨 *HASIL GAMBAR AI*\n\n📝 *Prompt:* ${prompt}${FOOTER}`,
+              },
+              { quoted: msg }
+            );
+          } catch (error) {
+            logError("Generate Image", error);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⚠️ Gagal membuat gambar: ${
+                  error.message || "Server AI sibuk"
+                }.${FOOTER}`,
+              },
+              { quoted: msg }
+            );
+          }
+
+          continue;
+        }
+
+        if (
+          command === "!editgambar" ||
+          command.startsWith("!editgambar ") ||
+          command === "!editimg" ||
+          command.startsWith("!editimg ")
+        ) {
+          let prompt = text.replace(/^!(editgambar|editimg)\s*/i, "").trim();
+          const image = await downloadImageAsBase64(sock, msg);
+
+          if (!image) {
+            await sock.sendMessage(
+              jid,
+              {
+                text: `❌ Silakan reply gambar atau kirim gambar dengan instruksi edit.\n\nContoh:\n*!editgambar ubah latar belakang jadi pantai di sore hari*${FOOTER}`,
+              },
+              { quoted: msg }
+            );
+            continue;
+          }
+
+          if (!prompt) {
+            prompt = "Ubah latar belakang dan tingkatkan kualitas visual gambar ini";
+          }
+
+          const cooldownKey = `img:${jid}:${sender}`;
+          const last = aiCooldown.get(cooldownKey) || 0;
+
+          if (!msg.key.fromMe && Date.now() - last < AI_COOLDOWN_MS) {
+            const remaining = Math.ceil(
+              (AI_COOLDOWN_MS - (Date.now() - last)) / 1000
+            );
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⏳ Tunggu ${remaining} detik sebelum edit gambar lagi.${FOOTER}`,
+              },
+              { quoted: msg }
+            );
+            continue;
+          }
+
+          aiCooldown.set(cooldownKey, Date.now());
+
+          try {
+            await sock.sendMessage(jid, {
+              react: {
+                text: "🎨",
+                key: msg.key,
+              },
+            });
+          } catch {}
+
+          try {
+            const imageBuffer = await generateAIImage({ prompt, image });
+
+            await sock.sendMessage(
+              jid,
+              {
+                image: imageBuffer,
+                caption: `🎨 *HASIL EDIT GAMBAR AI*\n\n📝 *Instruksi:* ${prompt}${FOOTER}`,
+              },
+              { quoted: msg }
+            );
+          } catch (error) {
+            logError("Edit Image", error);
+
+            await sock.sendMessage(
+              jid,
+              {
+                text: `⚠️ Gagal mengedit gambar: ${
+                  error.message || "Server AI sibuk"
+                }.${FOOTER}`,
+              },
+              { quoted: msg }
             );
           }
 

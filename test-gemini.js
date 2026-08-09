@@ -6,10 +6,24 @@ console.log("=================================");
 
 console.log("Node:", process.version);
 
-const apiKey = process.env.GEMINI_API_KEY?.trim();
+const baseUrl = (
+  process.env.AI_BASE_URL ||
+  "https://generativelanguage.googleapis.com/v1beta"
+).replace(/\/+$/, "");
+
+const apiKey = (
+  process.env.AI_API_KEY ||
+  process.env.GEMINI_API_KEY ||
+  ""
+).trim();
+
+const model =
+  process.env.AI_MODEL ||
+  process.env.GEMINI_MODEL ||
+  "gemini-3.6-flash";
 
 if (!apiKey) {
-  console.error("❌ GEMINI_API_KEY tidak ditemukan.");
+  console.error("❌ AI_API_KEY / GEMINI_API_KEY tidak ditemukan.");
   console.error("Pastikan file .env ada di folder project.");
   process.exit(1);
 }
@@ -18,6 +32,8 @@ console.log(
   "✅ API Key terbaca:",
   apiKey.substring(0, 5) + "..."
 );
+console.log("🌐 Base URL:", baseUrl);
+console.log("🧠 Model:", model);
 
 console.log("🚀 Mengirim request ke Gemini...");
 
@@ -28,25 +44,24 @@ const timeout = setTimeout(() => {
 }, 15000);
 
 try {
-  const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/interactions",
-    {
-      method: "POST",
+  const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": apiKey,
-      },
-
-      body: JSON.stringify({
-        model: "gemini-3.6-flash",
-        input: "Balas hanya dengan tulisan: Gemini berhasil terhubung!",
-        store: false,
-      }),
-
-      signal: controller.signal,
-    }
-  );
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: "Balas hanya dengan tulisan: Gemini berhasil terhubung!" }],
+        },
+      ],
+    }),
+    signal: controller.signal,
+  });
 
   clearTimeout(timeout);
 
@@ -73,15 +88,8 @@ try {
     process.exit(1);
   }
 
-  const modelOutput =
-    data.steps?.find(
-      (step) => step.type === "model_output"
-    );
-
-  const text =
-    modelOutput?.content?.find(
-      (content) => content.type === "text"
-    )?.text;
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const text = parts.map((p) => p.text || "").join("\n").trim();
 
   console.log("");
   console.log("=================================");
