@@ -1645,7 +1645,7 @@ async function callGeminiGenerate({
       "x-goog-api-key": AI_API_KEY,
     },
     body: JSON.stringify({
-      system_instruction: {
+      systemInstruction: {
         parts: [
           {
             text: geminiSystemInstruction(userName),
@@ -1791,7 +1791,7 @@ async function callGeminiOnce({
       "x-goog-api-key": AI_API_KEY,
     },
     body: JSON.stringify({
-      system_instruction: {
+      systemInstruction: {
         parts: [
           {
             text: systemInstruction,
@@ -1836,7 +1836,7 @@ async function generateAIImage({ prompt, image = null }) {
     try {
       const editDescription = await callGeminiOnce({
         systemInstruction:
-          "You are an expert image editing assistant. Analyze the input image and the user's edit instruction. Write a single detailed English paragraph describing what the newly modified visual scene should look like. Do not include preamble, quotes, or meta commentary.",
+          "You are a specialized text-to-image prompt translator and enhancer. Analyze the input image and the user's edit instruction. Write a single detailed English paragraph describing what the newly modified visual scene should look like. Output ONLY the raw English visual prompt string.",
         userText: `Edit instruction: ${prompt}`,
         image,
       });
@@ -1850,6 +1850,24 @@ async function generateAIImage({ prompt, image = null }) {
       }
     } catch (err) {
       logWarn("Gemini Vision Edit Prompt fallback", err.message);
+    }
+  } else {
+    try {
+      const enhancedPrompt = await callGeminiOnce({
+        systemInstruction:
+          "You are a specialized text-to-image prompt translator and enhancer.\nTask:\n1. Convert the user input (Indonesian or any language) into a detailed, high quality English visual image prompt suitable for AI image generators (FLUX/Midjourney).\n2. Always translate Indonesian color names & terms accurately (e.g. 'kucing oren' -> 'vibrant orange ginger tabby cat').\n3. Add realistic photographic details like 8k resolution, cinematic lighting, sharp focus, vibrant colors.\n4. Output ONLY the final English visual prompt string. Do NOT output any preamble, quotes, explanations or labels.",
+        userText: prompt,
+      });
+
+      if (
+        enhancedPrompt &&
+        typeof enhancedPrompt === "string" &&
+        enhancedPrompt.length > 5
+      ) {
+        visualPrompt = enhancedPrompt.trim();
+      }
+    } catch (err) {
+      logWarn("Gemini Prompt Enhancer fallback", err.message);
     }
   }
 
