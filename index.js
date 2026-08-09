@@ -31,6 +31,7 @@ const ALLOWED_GROUPS = new Set([
   "120363412266032657@g.us",
 ]);
 
+// Main AI Route (Chat, Teks, Moderasi, Summary, Prompt Enhancement)
 const AI_BASE_URL = (
   process.env.AI_BASE_URL ||
   "https://generativelanguage.googleapis.com/v1beta"
@@ -46,6 +47,22 @@ const AI_MODEL =
   process.env.AI_MODEL ||
   process.env.GEMINI_MODEL ||
   "gemini-3.6-flash";
+
+// Dedicated Vision Route (Khusus Baca / Menganalisis Gambar)
+const GEMINI_VISION_API_KEY = (
+  process.env.GEMINI_API_KEY ||
+  process.env.AI_API_KEY ||
+  ""
+).trim();
+
+const GEMINI_VISION_BASE_URL = (
+  process.env.GEMINI_BASE_URL ||
+  "https://generativelanguage.googleapis.com/v1beta"
+).replace(/\/+$/, "");
+
+const GEMINI_VISION_MODEL =
+  process.env.GEMINI_VISION_MODEL ||
+  "gemini-2.0-flash";
 
 const GEMINI_MODEL = AI_MODEL;
 
@@ -1602,6 +1619,11 @@ async function callGeminiGenerate({
 }) {
   const history = await loadAIHistory(groupId);
 
+  const isVisionRequest = Boolean(image?.base64 && image?.mimeType);
+  const apiKey = isVisionRequest ? GEMINI_VISION_API_KEY : AI_API_KEY;
+  const baseUrl = isVisionRequest ? GEMINI_VISION_BASE_URL : AI_BASE_URL;
+  const model = isVisionRequest ? GEMINI_VISION_MODEL : AI_MODEL;
+
   const userParts = [
     {
       text: prompt || "Halo",
@@ -1610,8 +1632,8 @@ async function callGeminiGenerate({
 
   if (image?.base64 && image?.mimeType) {
     userParts.push({
-      inline_data: {
-        mime_type: image.mimeType,
+      inlineData: {
+        mimeType: image.mimeType,
         data: image.base64,
       },
     });
@@ -1619,8 +1641,8 @@ async function callGeminiGenerate({
 
   if (audio?.base64 && audio?.mimeType) {
     userParts.push({
-      inline_data: {
-        mime_type: audio.mimeType,
+      inlineData: {
+        mimeType: audio.mimeType,
         data: audio.base64,
       },
     });
@@ -1634,15 +1656,15 @@ async function callGeminiGenerate({
     },
   ];
 
-  const url = `${AI_BASE_URL}/models/${encodeURIComponent(
-    AI_MODEL
-  )}:generateContent?key=${encodeURIComponent(AI_API_KEY)}`;
+  const url = `${baseUrl}/models/${encodeURIComponent(
+    model
+  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-goog-api-key": AI_API_KEY,
+      "x-goog-api-key": apiKey,
     },
     body: JSON.stringify({
       systemInstruction: {
@@ -1746,6 +1768,11 @@ async function callGeminiOnce({
   audio = null,
   json = false,
 }) {
+  const isVisionRequest = Boolean(image?.base64 && image?.mimeType);
+  const apiKey = isVisionRequest ? GEMINI_VISION_API_KEY : AI_API_KEY;
+  const baseUrl = isVisionRequest ? GEMINI_VISION_BASE_URL : AI_BASE_URL;
+  const model = isVisionRequest ? GEMINI_VISION_MODEL : AI_MODEL;
+
   const parts = [
     {
       text: userText || "Halo",
@@ -1754,8 +1781,8 @@ async function callGeminiOnce({
 
   if (image?.base64 && image?.mimeType) {
     parts.push({
-      inline_data: {
-        mime_type: image.mimeType,
+      inlineData: {
+        mimeType: image.mimeType,
         data: image.base64,
       },
     });
@@ -1763,16 +1790,16 @@ async function callGeminiOnce({
 
   if (audio?.base64 && audio?.mimeType) {
     parts.push({
-      inline_data: {
-        mime_type: audio.mimeType,
+      inlineData: {
+        mimeType: audio.mimeType,
         data: audio.base64,
       },
     });
   }
 
-  const url = `${AI_BASE_URL}/models/${encodeURIComponent(
-    AI_MODEL
-  )}:generateContent?key=${encodeURIComponent(AI_API_KEY)}`;
+  const url = `${baseUrl}/models/${encodeURIComponent(
+    model
+  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
   const generationConfig = {
     temperature: 0.5,
@@ -1788,7 +1815,7 @@ async function callGeminiOnce({
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-goog-api-key": AI_API_KEY,
+      "x-goog-api-key": apiKey,
     },
     body: JSON.stringify({
       systemInstruction: {
@@ -2335,7 +2362,8 @@ async function startWhatsApp() {
   console.log("\n============================================");
   console.log(`🤖 ${BOT_NAME}`);
   console.log("============================================");
-  console.log(`🧠 Gemini: ${GEMINI_MODEL}`);
+  console.log(`🧠 AI Main Model: ${AI_MODEL}`);
+  console.log(`👁️ AI Vision Model: ${GEMINI_VISION_MODEL}`);
   console.log(`🔐 Whitelist Groups: ${ALLOWED_GROUPS.size}`);
   console.log(`💾 Database: ${database ? "ON" : "OFF"}`);
   console.log(`📁 Auth Dir: ${AUTH_DIR}`);
