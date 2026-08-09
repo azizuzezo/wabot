@@ -1834,6 +1834,38 @@ async function generateAIImage({ prompt, image = null }) {
 
   if (image?.base64) {
     try {
+      const seed = Math.floor(Math.random() * 10000000);
+      const encodedPrompt = encodeURIComponent(prompt || "High quality realistic edit");
+      const postUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}`;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 30000);
+
+      const res = await fetch(postUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: `data:${image.mimeType || "image/jpeg"};base64,${image.base64}`,
+          model: "flux",
+          width: 1024,
+          height: 1024,
+          nologo: true,
+          seed,
+        }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timer);
+
+      if (res.ok) {
+        const arrayBuf = await res.arrayBuffer();
+        return Buffer.from(arrayBuf);
+      }
+    } catch (err) {
+      logWarn("POST img2img failed, falling back to Gemini Vision description...", err.message);
+    }
+
+    try {
       const editDescription = await callGeminiOnce({
         systemInstruction:
           "You are a specialized text-to-image prompt translator and enhancer. Analyze the input image and the user's edit instruction. Write a single detailed English paragraph describing what the newly modified visual scene should look like. Output ONLY the raw English visual prompt string.",
@@ -1874,8 +1906,8 @@ async function generateAIImage({ prompt, image = null }) {
   const seed = Math.floor(Math.random() * 10000000);
   const encodedPrompt = encodeURIComponent(visualPrompt);
 
-  const primaryUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&model=flux`;
-  const fallbackUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&model=turbo`;
+  const primaryUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&model=flux-realism`;
+  const fallbackUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}&model=flux`;
 
   try {
     const controller = new AbortController();
