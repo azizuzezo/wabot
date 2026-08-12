@@ -1,5 +1,6 @@
 import "dotenv/config";
 
+import http from "node:http";
 import WebSocket from "ws";
 
 if (!globalThis.WebSocket) {
@@ -15,7 +16,7 @@ import makeWASocket, {
 
 import { Boom } from "@hapi/boom";
 import qrcode from "qrcode-terminal";
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
 // =====================================================
@@ -2330,6 +2331,174 @@ function scheduleReconnect() {
       scheduleReconnect();
     }
   }, 3_000);
+}
+
+// =====================================================
+// OTP SENDER API (for other projects to trigger via HTTP)
+// =====================================================
+
+const OTP_API_KEY = String(process.env.OTP_API_KEY || "").trim();
+const OTP_PORT = Number(process.env.OTP_PORT || process.env.PORT || 3300);
+const OTP_RATE_LIMIT_MS = Number(process.env.OTP_RATE_LIMIT_MS || 30_000);
+const OTP_CODE_TTL_MINUTES = Number(process.env.OTP_CODE_TTL_MINUTES || 5);
+const OTP_MAX_BODY_BYTES = 10_000;
+
+const otpLastSentAt = new Map();
+
+function maskJid(jid) {
+  const digits = String(jid || "").replace(/\D/g, "");
+
+  if (digits.length <= 6) {
+    return digits;
+  }
+
+  return `${digits.slice(0, 4)}${"*".repeat(digits.length - 6)}${digits.slice(-2)}`;
+}
+
+function generateOtpCode(length = 6) {
+  return String(randomInt(0, 10 ** length)).padStart(length, "0");
+}
+
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+
+    req.on("data", (chunk) => {
+      size += chunk.length;
+
+      if (size > OTP_MAX_BODY_BYTES) {
+        reject(new Error("Payload too large"));
+        req.destroy();
+        return;
+      }
+
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      if (!chunks.length) {
+        resolve({});
+        return;
+      }
+
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        reject(new Error("Invalid JSON body"));
+      }
+    });
+
+    req.on("error", reject);
+  });
+}
+
+function sendJson(res, statusCode, payload) {
+  const body = JSON.stringify(payload);
+
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+  });
+
+  res.end(body);
+}
+
+async function handleOtpSend(req, res) {
+  const apiKey = req.headers["x-api-key"] || "";
+
+  if (!OTP_API_KEY || apiKey !== OTP_API_KEY) {
+    sendJson(res, 401, { success: false, error: "Unauthorized" });
+    return;
+  }
+
+  let body;
+
+  try {
+    body = await readJsonBody(req);
+  } catch (error) {
+    sendJson(res, 400, { success: false, error: error.message });
+    return;
+  }
+
+  const jid = normalizePhoneToJid(body.phone);
+
+  if (!jid) {
+    sendJson(res, 400, { success: false, error: "Invalid or missing 'phone'" });
+    return;
+  }
+
+  if (!activeSock) {
+    sendJson(res, 503, { success: false, error: "WhatsApp not connected" });
+    return;
+  }
+
+  const lastSentAt = otpLastSentAt.get(jid);
+
+  if (lastSentAt && Date.now() - lastSentAt < OTP_RATE_LIMIT_MS) {
+    sendJson(res, 429, {
+      success: false,
+      error: "Too many requests for this number, please retry shortly",
+    });
+    return;
+  }
+
+  const callerProvidedOtp = Boolean(body.otp);
+  const otp = String(body.otp || generateOtpCode()).trim();
+
+  if (!/^[A-Za-z0-9]{3,10}$/.test(otp)) {
+    sendJson(res, 400, { success: false, error: "Invalid 'otp' format" });
+    return;
+  }
+
+  const text = body.message
+    ? String(body.message).replaceAll("{otp}", otp)
+    : `🔐 *Kode OTP Anda*\n\n*${otp}*\n\nJangan bagikan kode ini ke siapapun.\nBerlaku ${OTP_CODE_TTL_MINUTES} menit.${FOOTER}`;
+
+  try {
+    await activeSock.sendMessage(jid, { text });
+
+    otpLastSentAt.set(jid, Date.now());
+
+    logInfo("OTP sent to", maskJid(jid));
+
+    sendJson(res, 200, {
+      success: true,
+      phone: jid,
+      otp: callerProvidedOtp ? undefined : otp,
+    });
+  } catch (error) {
+    logError("OTP send failed", error);
+    sendJson(res, 500, { success: false, error: "Failed to send WhatsApp message" });
+  }
+}
+
+function startOtpServer() {
+  if (!OTP_API_KEY) {
+    logWarn("OTP_API_KEY not set — OTP sender API disabled.");
+    return;
+  }
+
+  const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/health") {
+      sendJson(res, 200, { success: true, whatsappConnected: Boolean(activeSock) });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/otp/send") {
+      handleOtpSend(req, res).catch((error) => {
+        logError("OTP endpoint error", error);
+        sendJson(res, 500, { success: false, error: "Internal server error" });
+      });
+      return;
+    }
+
+    sendJson(res, 404, { success: false, error: "Not found" });
+  });
+
+  server.listen(OTP_PORT, () => {
+    logInfo(`🔐 OTP Sender API listening on port ${OTP_PORT}`);
+  });
 }
 
 // =====================================================
@@ -4868,6 +5037,8 @@ startWhatsApp().catch((error) => {
   logError("Fatal bot error", error);
   scheduleReconnect();
 });
+
+startOtpServer();
 
 // =====================================================
 // AUTO RESTART / CRASH HANDLER
