@@ -37,10 +37,34 @@ function formatUptime(ms) {
 
 // ---- Auth ----
 
+let session = { role: null, allowedGroups: null, username: null };
+
+function applyRoleUI() {
+  const isScoped = session.role !== "super";
+
+  $$(".super-only").forEach((el) => el.classList.toggle("hidden", isScoped));
+
+  const badge = $("#role-badge");
+  badge.textContent = isScoped ? `scoped: ${(session.allowedGroups || []).join(", ")}` : "super admin";
+
+  if (isScoped) {
+    const firstGroup = (session.allowedGroups || [])[0] || "";
+
+    for (const id of ["note-group-id", "doc-group-id", "knowledge-filter-group", "test-group-id"]) {
+      const el = document.getElementById(id);
+      if (el) {
+        el.value = firstGroup;
+        if (session.allowedGroups.length <= 1) el.readOnly = true;
+      }
+    }
+  }
+}
+
 async function checkAuth() {
   const data = await api("/api/me");
   showScreen(data.authenticated);
   if (data.authenticated) {
+    session = { role: data.role, allowedGroups: data.allowedGroups, username: data.username };
     initApp();
   }
 }
@@ -53,6 +77,8 @@ $("#login-form").addEventListener("submit", async (e) => {
 
   try {
     await api("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
+    const me = await api("/api/me");
+    session = { role: me.role, allowedGroups: me.allowedGroups, username: me.username };
     showScreen(true);
     initApp();
   } catch (error) {
@@ -464,9 +490,78 @@ $("#save-global-settings-btn").addEventListener("click", async () => {
   }
 });
 
+// ---- Admin users (super only) ----
+
+$("#new-admin-user-role").addEventListener("change", (e) => {
+  $("#new-admin-user-groups-wrap").classList.toggle("hidden", e.target.value === "super");
+});
+
+async function loadAdminUsers() {
+  const { users } = await api("/api/admin-users");
+  const list = $("#admin-users-list");
+  list.innerHTML = "";
+
+  if (!users.length) {
+    list.innerHTML = '<p class="muted">Belum ada akun tambahan.</p>';
+    return;
+  }
+
+  for (const user of users) {
+    const row = document.createElement("div");
+    row.className = "list-item";
+    row.innerHTML = `
+      <div class="main">
+        <strong>${user.username} <span class="tag">${user.role}</span></strong>
+        <span>${user.role === "super" ? "Akses penuh" : (user.allowed_groups || []).join(", ")}</span>
+      </div>
+      <button class="small-btn danger">Hapus</button>
+    `;
+
+    row.querySelector("button").addEventListener("click", async () => {
+      try {
+        await api(`/api/admin-users/${encodeURIComponent(user.username)}`, { method: "DELETE" });
+        loadAdminUsers();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    list.appendChild(row);
+  }
+}
+
+$("#add-admin-user-btn").addEventListener("click", async () => {
+  const username = $("#new-admin-user-username").value.trim();
+  const password = $("#new-admin-user-password").value;
+  const role = $("#new-admin-user-role").value;
+  const allowedGroups = $("#new-admin-user-groups").value
+    .split(",")
+    .map((g) => g.trim())
+    .filter(Boolean);
+  const result = $("#admin-user-result");
+
+  result.textContent = "Membuat akun...";
+
+  try {
+    await api("/api/admin-users", {
+      method: "POST",
+      body: JSON.stringify({ username, password, role, allowedGroups }),
+    });
+    result.textContent = "✅ Akun dibuat";
+    $("#new-admin-user-username").value = "";
+    $("#new-admin-user-password").value = "";
+    $("#new-admin-user-groups").value = "";
+    loadAdminUsers();
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  }
+});
+
 // ---- Init ----
 
 function initApp() {
+  applyRoleUI();
+
   if (appInitialized) {
     connectStatusStream();
     return;
@@ -475,9 +570,13 @@ function initApp() {
   appInitialized = true;
   connectStatusStream();
   loadGroups();
-  loadOwnerAdmins();
-  loadKnowledge();
-  loadGlobalSettings();
+  loadKnowledge(session.allowedGroups?.[0] || "");
+
+  if (session.role === "super") {
+    loadOwnerAdmins();
+    loadGlobalSettings();
+    loadAdminUsers();
+  }
 }
 
 checkAuth();

@@ -8,7 +8,13 @@ import multer from "multer";
 import QRCode from "qrcode";
 
 import { botState, botEvents, getStatusSnapshot } from "./bridge.js";
-import { adminAuthConfigured, verifyCredentials, requireAuth } from "./auth.js";
+import {
+  adminAuthConfigured,
+  verifyCredentials,
+  requireAuth,
+  requireSuper,
+  canAccessGroup,
+} from "./auth.js";
 import {
   listGroups,
   setGroupEnabled,
@@ -20,12 +26,15 @@ import {
 } from "./groups.js";
 import {
   listKnowledge,
+  listKnowledgeForGroups,
+  getKnowledgeById,
   addNote,
   addDocument,
   deleteKnowledge,
 } from "./knowledge.js";
 import { loadGlobalSettings, updateGlobalSettings } from "./globalSettings.js";
 import { testChatModel } from "./gemini.js";
+import { listAdminUsers, createAdminUser, deleteAdminUser } from "./adminUsers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
@@ -87,14 +96,16 @@ export function startAdminServer({ botName } = {}) {
     "/api/login",
     asyncRoute(async (req, res) => {
       const { username, password } = req.body || {};
-      const ok = await verifyCredentials(username, password);
+      const result = await verifyCredentials(username, password);
 
-      if (!ok) {
+      if (!result) {
         return res.status(401).json({ success: false, error: "Username atau password salah" });
       }
 
       req.session.authenticated = true;
-      req.session.username = username;
+      req.session.username = String(username || "").trim();
+      req.session.role = result.role;
+      req.session.allowedGroups = result.allowedGroups;
       res.json({ success: true });
     })
   );
@@ -104,7 +115,16 @@ export function startAdminServer({ botName } = {}) {
   });
 
   app.get("/api/me", (req, res) => {
-    res.json({ authenticated: Boolean(req.session?.authenticated) });
+    if (!req.session?.authenticated) {
+      return res.json({ authenticated: false });
+    }
+
+    res.json({
+      authenticated: true,
+      username: req.session.username,
+      role: req.session.role,
+      allowedGroups: req.session.allowedGroups,
+    });
   });
 
   // ---- Everything below requires login ----
@@ -158,7 +178,16 @@ export function startAdminServer({ botName } = {}) {
   app.get(
     "/api/groups",
     asyncRoute(async (req, res) => {
-      res.json({ success: true, groups: await listGroups() });
+      const groups = await listGroups();
+
+      if (req.session.role !== "super") {
+        return res.json({
+          success: true,
+          groups: groups.filter((g) => req.session.allowedGroups.includes(g.groupId)),
+        });
+      }
+
+      res.json({ success: true, groups });
     })
   );
 
@@ -171,6 +200,10 @@ export function startAdminServer({ botName } = {}) {
         return res.status(400).json({ success: false, error: "groupId wajib diisi" });
       }
 
+      if (!canAccessGroup(req, groupId)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+      }
+
       await setGroupEnabled(groupId, true, name, req.session.username);
       res.json({ success: true });
     })
@@ -179,6 +212,10 @@ export function startAdminServer({ botName } = {}) {
   app.delete(
     "/api/groups/:groupId",
     asyncRoute(async (req, res) => {
+      if (!canAccessGroup(req, req.params.groupId)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+      }
+
       await setGroupEnabled(req.params.groupId, false);
       res.json({ success: true });
     })
@@ -187,6 +224,10 @@ export function startAdminServer({ botName } = {}) {
   app.get(
     "/api/groups/:groupId/settings",
     asyncRoute(async (req, res) => {
+      if (!canAccessGroup(req, req.params.groupId)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+      }
+
       res.json({ success: true, settings: await getGroupSettingsWeb(req.params.groupId) });
     })
   );
@@ -194,6 +235,10 @@ export function startAdminServer({ botName } = {}) {
   app.put(
     "/api/groups/:groupId/settings",
     asyncRoute(async (req, res) => {
+      if (!canAccessGroup(req, req.params.groupId)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+      }
+
       const patch = req.body || {};
 
       if (patch.aiModel) {
@@ -210,9 +255,11 @@ export function startAdminServer({ botName } = {}) {
   );
 
   // ---- Global AI settings (chat personal/DM, trigger mode, model default) ----
+  // Khusus super admin — bot-wide, tidak cocok untuk akun scoped per-grup.
 
   app.get(
     "/api/global-settings",
+    requireSuper,
     asyncRoute(async (req, res) => {
       res.json({ success: true, settings: await loadGlobalSettings() });
     })
@@ -220,6 +267,7 @@ export function startAdminServer({ botName } = {}) {
 
   app.put(
     "/api/global-settings",
+    requireSuper,
     asyncRoute(async (req, res) => {
       const patch = req.body || {};
 
@@ -236,10 +284,11 @@ export function startAdminServer({ botName } = {}) {
     })
   );
 
-  // ---- Owner admins ----
+  // ---- Owner admins (khusus super admin — bot-wide) ----
 
   app.get(
     "/api/owner-admins",
+    requireSuper,
     asyncRoute(async (req, res) => {
       res.json({ success: true, admins: await listOwnerAdmins() });
     })
@@ -247,6 +296,7 @@ export function startAdminServer({ botName } = {}) {
 
   app.post(
     "/api/owner-admins",
+    requireSuper,
     asyncRoute(async (req, res) => {
       const { phone } = req.body || {};
 
@@ -261,8 +311,44 @@ export function startAdminServer({ botName } = {}) {
 
   app.delete(
     "/api/owner-admins/:userJid",
+    requireSuper,
     asyncRoute(async (req, res) => {
       await removeOwnerAdminWeb(req.params.userJid);
+      res.json({ success: true });
+    })
+  );
+
+  // ---- Admin users (khusus super admin) ----
+
+  app.get(
+    "/api/admin-users",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      res.json({ success: true, users: await listAdminUsers() });
+    })
+  );
+
+  app.post(
+    "/api/admin-users",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      const { username, password, role, allowedGroups } = req.body || {};
+      const user = await createAdminUser({
+        username,
+        password,
+        role,
+        allowedGroups,
+        createdBy: req.session.username,
+      });
+      res.json({ success: true, user });
+    })
+  );
+
+  app.delete(
+    "/api/admin-users/:username",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      await deleteAdminUser(req.params.username);
       res.json({ success: true });
     })
   );
@@ -273,6 +359,16 @@ export function startAdminServer({ botName } = {}) {
     "/api/knowledge",
     asyncRoute(async (req, res) => {
       const groupId = req.query.groupId || null;
+
+      if (req.session.role !== "super") {
+        if (groupId && !req.session.allowedGroups.includes(groupId)) {
+          return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+        }
+
+        const groups = groupId ? [groupId] : req.session.allowedGroups;
+        return res.json({ success: true, knowledge: await listKnowledgeForGroups(groups) });
+      }
+
       res.json({ success: true, knowledge: await listKnowledge(groupId) });
     })
   );
@@ -281,6 +377,11 @@ export function startAdminServer({ botName } = {}) {
     "/api/knowledge/note",
     asyncRoute(async (req, res) => {
       const { groupId, title, content } = req.body || {};
+
+      if (!canAccessGroup(req, groupId || null)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+      }
+
       const row = await addNote({
         groupId: groupId || null,
         title,
@@ -299,9 +400,15 @@ export function startAdminServer({ botName } = {}) {
         return res.status(400).json({ success: false, error: "File wajib diunggah" });
       }
 
+      const groupId = req.body?.groupId || null;
+
+      if (!canAccessGroup(req, groupId)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+      }
+
       const text = await extractTextFromUpload(req.file);
       const result = await addDocument({
-        groupId: req.body?.groupId || null,
+        groupId,
         title: req.body?.title || req.file.originalname,
         sourceFilename: req.file.originalname,
         fullText: text,
@@ -315,6 +422,14 @@ export function startAdminServer({ botName } = {}) {
   app.delete(
     "/api/knowledge/:id",
     asyncRoute(async (req, res) => {
+      if (req.session.role !== "super") {
+        const row = await getKnowledgeById(req.params.id);
+
+        if (!row || !req.session.allowedGroups.includes(row.group_id)) {
+          return res.status(403).json({ success: false, error: "Tidak punya akses ke knowledge ini" });
+        }
+      }
+
       await deleteKnowledge(req.params.id);
       res.json({ success: true });
     })
@@ -327,12 +442,16 @@ export function startAdminServer({ botName } = {}) {
     asyncRoute(async (req, res) => {
       const { groupId, message } = req.body || {};
 
-      if (!botState.sock) {
-        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
-      }
-
       if (!groupId || !message) {
         return res.status(400).json({ success: false, error: "groupId dan message wajib diisi" });
+      }
+
+      if (!canAccessGroup(req, groupId)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+      }
+
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
       }
 
       await botState.sock.sendMessage(groupId, { text: message });

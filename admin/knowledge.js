@@ -62,6 +62,45 @@ export async function listKnowledge(groupId) {
   return data || [];
 }
 
+// Dipakai akun 'scoped' — hanya grup-grup yang diizinkan, TANPA knowledge global.
+export async function listKnowledgeForGroups(groupIds) {
+  ensureDatabase();
+
+  if (!Array.isArray(groupIds) || !groupIds.length) {
+    return [];
+  }
+
+  const { data, error } = await database
+    .from("bot_knowledge")
+    .select(
+      "id,group_id,type,title,source_filename,chunk_index,chunk_count,content,created_by,created_at"
+    )
+    .in("group_id", groupIds)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw error;
+  }
+
+  return data || [];
+}
+
+export async function getKnowledgeById(id) {
+  ensureDatabase();
+
+  const { data, error } = await database
+    .from("bot_knowledge")
+    .select("id,group_id")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
 export async function addNote({ groupId, title, content, createdBy }) {
   ensureDatabase();
 

@@ -26,6 +26,7 @@
 <div id="app-screen" class="screen hidden">
   <header class="topbar">
     <div class="brand">🤖 Muter Assistant <span class="badge-env">admin</span></div>
+    <span class="tag" id="role-badge"></span>
     <div class="status-pill" id="status-pill">
       <span class="dot" id="status-dot"></span>
       <span id="status-text">Memeriksa...</span>
@@ -36,9 +37,10 @@
   <nav class="tabs">
     <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
     <button class="tab-btn" data-tab="groups">Grup</button>
-    <button class="tab-btn" data-tab="admins">Owner Admin</button>
+    <button class="tab-btn super-only" data-tab="admins">Owner Admin</button>
     <button class="tab-btn" data-tab="knowledge">Knowledge Base</button>
-    <button class="tab-btn" data-tab="ai-settings">Pengaturan AI</button>
+    <button class="tab-btn super-only" data-tab="ai-settings">Pengaturan AI</button>
+    <button class="tab-btn super-only" data-tab="admin-users">Akun Admin</button>
   </nav>
 
   <main>
@@ -79,7 +81,7 @@
     </section>
 
     <section id="tab-groups" class="tab-panel">
-      <div class="card">
+      <div class="card super-only">
         <h2>Tambah Grup</h2>
         <div class="inline-form">
           <input type="text" id="new-group-id" placeholder="Group ID (1203xxxx@g.us)" />
@@ -197,6 +199,34 @@
 
       <button id="save-global-settings-btn">Simpan Pengaturan AI</button>
       <p id="global-settings-result" class="muted"></p>
+    </section>
+
+    <section id="tab-admin-users" class="tab-panel">
+      <div class="card">
+        <h2>Tambah Akun Admin</h2>
+        <p class="muted">Akun "scoped" hanya bisa kelola grup yang dipilih (tidak bisa akses Owner Admin, Pengaturan AI global, atau grup lain).</p>
+        <label>Username
+          <input type="text" id="new-admin-user-username" placeholder="contoh: test-groupA" />
+        </label>
+        <label>Password
+          <input type="text" id="new-admin-user-password" placeholder="Password" />
+        </label>
+        <label>Role
+          <select id="new-admin-user-role">
+            <option value="scoped">Scoped (dibatasi ke grup tertentu)</option>
+            <option value="super">Super (akses penuh)</option>
+          </select>
+        </label>
+        <label id="new-admin-user-groups-wrap">Grup yang diizinkan (pisahkan koma kalau lebih dari satu)
+          <input type="text" id="new-admin-user-groups" placeholder="1203xxxx@g.us" />
+        </label>
+        <button id="add-admin-user-btn">Buat Akun</button>
+        <p id="admin-user-result" class="muted"></p>
+      </div>
+      <div class="card">
+        <h2>Daftar Akun</h2>
+        <div id="admin-users-list" class="list"></div>
+      </div>
     </section>
   </main>
 </div>
