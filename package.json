@@ -15,7 +15,13 @@
     "@hapi/boom": "latest",
     "@supabase/supabase-js": "latest",
     "@whiskeysockets/baileys": "latest",
+    "bcryptjs": "^3.0.3",
     "dotenv": "latest",
+    "express": "^5.2.1",
+    "express-session": "^1.19.0",
+    "multer": "^2.2.0",
+    "pdf-parse": "^2.4.5",
+    "qrcode": "^1.5.4",
     "qrcode-terminal": "latest",
     "ws": "^8.21.3"
   }

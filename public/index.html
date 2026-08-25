@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Muter Assistant — Admin</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="login-screen" class="screen">
+  <form id="login-form" class="login-card">
+    <h1>🤖 Muter Assistant</h1>
+    <p class="subtitle">Login admin dashboard</p>
+    <label>Username
+      <input type="text" id="login-username" autocomplete="username" required />
+    </label>
+    <label>Password
+      <input type="password" id="login-password" autocomplete="current-password" required />
+    </label>
+    <button type="submit">Masuk</button>
+    <p id="login-error" class="error"></p>
+  </form>
+</div>
+
+<div id="app-screen" class="screen hidden">
+  <header class="topbar">
+    <div class="brand">🤖 Muter Assistant <span class="badge-env">admin</span></div>
+    <div class="status-pill" id="status-pill">
+      <span class="dot" id="status-dot"></span>
+      <span id="status-text">Memeriksa...</span>
+    </div>
+    <button id="logout-btn" class="ghost-btn">Keluar</button>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="groups">Grup</button>
+    <button class="tab-btn" data-tab="admins">Owner Admin</button>
+    <button class="tab-btn" data-tab="knowledge">Knowledge Base</button>
+  </nav>
+
+  <main>
+    <section id="tab-dashboard" class="tab-panel active">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Koneksi WhatsApp</h2>
+          <div id="connected-view" class="hidden">
+            <p class="ok-text">✅ Terhubung</p>
+            <p class="muted" id="account-id"></p>
+            <p class="muted" id="uptime"></p>
+          </div>
+          <div id="disconnected-view" class="hidden">
+            <p class="warn-text">⚠️ Belum terhubung</p>
+            <div id="qr-wrap" class="hidden">
+              <p class="muted">Scan QR ini dari WhatsApp → Perangkat Tertaut</p>
+              <img id="qr-image" alt="QR Code" />
+            </div>
+            <div id="pairing-wrap" class="hidden">
+              <p class="muted">Masukkan kode ini di WhatsApp → Tautkan dengan nomor telepon</p>
+              <p class="pairing-code" id="pairing-code"></p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Kirim Pesan Uji Coba</h2>
+          <label>Group ID
+            <input type="text" id="test-group-id" placeholder="1203xxxx@g.us" />
+          </label>
+          <label>Pesan
+            <textarea id="test-message" rows="3" placeholder="Halo dari admin dashboard"></textarea>
+          </label>
+          <button id="send-test-btn">Kirim</button>
+          <p id="test-result" class="muted"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-groups" class="tab-panel">
+      <div class="card">
+        <h2>Tambah Grup</h2>
+        <div class="inline-form">
+          <input type="text" id="new-group-id" placeholder="Group ID (1203xxxx@g.us)" />
+          <input type="text" id="new-group-name" placeholder="Nama grup (opsional)" />
+          <button id="add-group-btn">Tambah</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Daftar Grup</h2>
+        <div id="groups-list" class="list"></div>
+      </div>
+      <div class="card hidden" id="group-settings-card">
+        <h2>Pengaturan Grup: <span id="settings-group-name"></span></h2>
+        <div id="group-settings-body" class="toggle-list"></div>
+      </div>
+    </section>
+
+    <section id="tab-admins" class="tab-panel">
+      <div class="card">
+        <h2>Tambah Owner Admin</h2>
+        <div class="inline-form">
+          <input type="text" id="new-admin-phone" placeholder="Nomor WA (62812xxxx)" />
+          <button id="add-admin-btn">Tambah</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Daftar Owner Admin</h2>
+        <div id="admins-list" class="list"></div>
+      </div>
+    </section>
+
+    <section id="tab-knowledge" class="tab-panel">
+      <div class="card">
+        <h2>Tambah Catatan / Aturan</h2>
+        <p class="muted">Selalu disertakan penuh ke AI (cocok untuk aturan singkat, FAQ, info penting).</p>
+        <label>Berlaku untuk grup (kosongkan = semua grup)
+          <input type="text" id="note-group-id" placeholder="1203xxxx@g.us (opsional)" />
+        </label>
+        <label>Judul
+          <input type="text" id="note-title" placeholder="Contoh: Jam operasional" />
+        </label>
+        <label>Isi
+          <textarea id="note-content" rows="3" placeholder="Contoh: Toko buka jam 09.00 - 21.00 setiap hari."></textarea>
+        </label>
+        <button id="add-note-btn">Simpan Catatan</button>
+        <p id="note-result" class="muted"></p>
+      </div>
+
+      <div class="card">
+        <h2>Upload Dokumen (RAG)</h2>
+        <p class="muted">Dokumen (.txt, .md, .pdf) dipecah jadi potongan dan diambil otomatis saat relevan dengan pertanyaan.</p>
+        <label>Berlaku untuk grup (kosongkan = semua grup)
+          <input type="text" id="doc-group-id" placeholder="1203xxxx@g.us (opsional)" />
+        </label>
+        <label>Judul (opsional)
+          <input type="text" id="doc-title" placeholder="Contoh: Katalog Produk 2026" />
+        </label>
+        <label>File
+          <input type="file" id="doc-file" accept=".txt,.md,.pdf" />
+        </label>
+        <button id="upload-doc-btn">Upload</button>
+        <p id="doc-result" class="muted"></p>
+      </div>
+
+      <div class="card">
+        <h2>Isi Knowledge Base</h2>
+        <div class="inline-form">
+          <input type="text" id="knowledge-filter-group" placeholder="Filter by group ID (opsional)" />
+          <button id="knowledge-filter-btn">Filter</button>
+        </div>
+        <div id="knowledge-list" class="list"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

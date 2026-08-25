@@ -19,6 +19,19 @@ import qrcode from "qrcode-terminal";
 import { randomInt, randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 
+import {
+  allowedGroups as ALLOWED_GROUPS,
+  ownerAdminJids,
+  groupSettingsCache as groupSettings,
+  setSock as setBridgeSock,
+  setConnected as setBridgeConnected,
+  setQr as setBridgeQr,
+  setPairingCode as setBridgePairingCode,
+  setBotName as setBridgeBotName,
+} from "./admin/bridge.js";
+import { startAdminServer } from "./admin/server.js";
+import { buildKnowledgeContext } from "./admin/knowledge.js";
+
 // =====================================================
 // MUTER ASSISTANT CONFIG
 // =====================================================
@@ -27,10 +40,10 @@ const BOT_NAME = "Muter Assistant";
 const BOT_CREDIT = "aibot muter.my.id by duacincin.id";
 const FOOTER = `\n\n_${BOT_CREDIT}_`;
 
-const ALLOWED_GROUPS = new Set([
-  "120363429186517577@g.us",
-  "120363412266032657@g.us",
-]);
+ALLOWED_GROUPS.add("120363429186517577@g.us");
+ALLOWED_GROUPS.add("120363412266032657@g.us");
+
+setBridgeBotName(BOT_NAME);
 
 const AI_BASE_URL = (
   process.env.AI_BASE_URL ||
@@ -111,12 +124,11 @@ if (!database) {
 // =====================================================
 
 const aiCooldown = new Map();
-const groupSettings = new Map();
+// groupSettings & ownerAdminJids are shared with the admin dashboard — see ./admin/bridge.js
 const groupMetadataCache = new Map();
 const aiHistoryMap = new Map();
 const reminderTimers = new Map();
 const reminders = new Map();
-const ownerAdminJids = new Set();
 const messageFlood = new Map();
 const messageLog = new Map();
 const activePolls = new Map();
@@ -1644,6 +1656,8 @@ async function callGeminiGenerate({
     AI_MODEL
   )}:generateContent?key=${encodeURIComponent(AI_API_KEY)}`;
 
+  const knowledgeContext = await buildKnowledgeContext(groupId, prompt).catch(() => "");
+
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -1654,7 +1668,7 @@ async function callGeminiGenerate({
       systemInstruction: {
         parts: [
           {
-            text: geminiSystemInstruction(userName),
+            text: `${geminiSystemInstruction(userName)}${knowledgeContext}`,
           },
         ],
       },
@@ -2557,6 +2571,7 @@ async function startWhatsApp() {
   });
 
   activeSock = sock;
+  setBridgeSock(sock);
 
   let pairingCodeRequested = false;
 
@@ -2597,6 +2612,8 @@ async function startWhatsApp() {
           console.log("");
           console.log("================================");
           console.log("");
+
+          setBridgePairingCode(code);
         } catch (error) {
           logError("Request pairing code", error);
 
@@ -2607,6 +2624,8 @@ async function startWhatsApp() {
           qrcode.generate(qr, {
             small: true,
           });
+
+          setBridgeQr(qr);
         }
 
         return;
@@ -2619,6 +2638,8 @@ async function startWhatsApp() {
       qrcode.generate(qr, {
         small: true,
       });
+
+      setBridgeQr(qr);
     }
 
     if (connection === "open") {
@@ -2628,6 +2649,8 @@ async function startWhatsApp() {
 
       reconnectTimer = null;
       activeSock = sock;
+      setBridgeSock(sock);
+      setBridgeConnected(true);
 
       console.log("✅ WHATSAPP TERHUBUNG");
       console.log(`🤖 Bot: ${BOT_NAME} ONLINE`);
@@ -2646,6 +2669,7 @@ async function startWhatsApp() {
     if (connection === "close") {
       if (activeSock === sock) {
         activeSock = null;
+        setBridgeConnected(false);
       }
 
       let statusCode;
@@ -5039,6 +5063,7 @@ startWhatsApp().catch((error) => {
 });
 
 startOtpServer();
+startAdminServer({ botName: BOT_NAME });
 
 // =====================================================
 // AUTO RESTART / CRASH HANDLER
