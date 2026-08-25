@@ -196,15 +196,22 @@ async function loadGroups() {
   }
 }
 
+let currentSettingsGroupId = null;
+
 async function openGroupSettings(group) {
   const card = $("#group-settings-card");
   const body = $("#group-settings-body");
   card.classList.remove("hidden");
   $("#settings-group-name").textContent = group.name || group.groupId;
   body.innerHTML = '<p class="muted">Memuat...</p>';
+  currentSettingsGroupId = group.groupId;
 
   const { settings } = await api(`/api/groups/${encodeURIComponent(group.groupId)}/settings`);
   body.innerHTML = "";
+
+  $("#group-trigger-mode").value = settings.aiTriggerMode || "";
+  $("#group-ai-model").value = settings.aiModel || "";
+  $("#group-ai-result").textContent = "";
 
   for (const field of SETTINGS_FIELDS) {
     const row = document.createElement("div");
@@ -407,6 +414,56 @@ $("#upload-doc-btn").addEventListener("click", async () => {
   }
 });
 
+// ---- Per-group AI trigger mode / model override ----
+
+$("#save-group-ai-btn").addEventListener("click", async () => {
+  if (!currentSettingsGroupId) return;
+
+  const result = $("#group-ai-result");
+  result.textContent = "Menyimpan...";
+
+  try {
+    await api(`/api/groups/${encodeURIComponent(currentSettingsGroupId)}/settings`, {
+      method: "PUT",
+      body: JSON.stringify({
+        aiTriggerMode: $("#group-trigger-mode").value || null,
+        aiModel: $("#group-ai-model").value.trim() || null,
+      }),
+    });
+    result.textContent = "✅ Tersimpan";
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  }
+});
+
+// ---- Global AI settings (chat personal/DM, trigger mode, model default) ----
+
+async function loadGlobalSettings() {
+  const { settings } = await api("/api/global-settings");
+  $("#global-dm-enabled").checked = Boolean(settings.dmEnabled);
+  $("#global-trigger-mode").value = settings.aiTriggerMode || "command";
+  $("#global-ai-model").value = settings.aiModel || "";
+}
+
+$("#save-global-settings-btn").addEventListener("click", async () => {
+  const result = $("#global-settings-result");
+  result.textContent = "Menyimpan...";
+
+  try {
+    await api("/api/global-settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        dmEnabled: $("#global-dm-enabled").checked,
+        aiTriggerMode: $("#global-trigger-mode").value,
+        aiModel: $("#global-ai-model").value.trim() || null,
+      }),
+    });
+    result.textContent = "✅ Tersimpan";
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  }
+});
+
 // ---- Init ----
 
 function initApp() {
@@ -420,6 +477,7 @@ function initApp() {
   loadGroups();
   loadOwnerAdmins();
   loadKnowledge();
+  loadGlobalSettings();
 }
 
 checkAuth();

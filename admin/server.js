@@ -24,6 +24,8 @@ import {
   addDocument,
   deleteKnowledge,
 } from "./knowledge.js";
+import { loadGlobalSettings, updateGlobalSettings } from "./globalSettings.js";
+import { testChatModel } from "./gemini.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
@@ -192,7 +194,44 @@ export function startAdminServer({ botName } = {}) {
   app.put(
     "/api/groups/:groupId/settings",
     asyncRoute(async (req, res) => {
-      const updated = await updateGroupSettingsWeb(req.params.groupId, req.body || {});
+      const patch = req.body || {};
+
+      if (patch.aiModel) {
+        const test = await testChatModel(patch.aiModel);
+
+        if (!test.ok) {
+          return res.status(400).json({ success: false, error: `Model tidak valid: ${test.error}` });
+        }
+      }
+
+      const updated = await updateGroupSettingsWeb(req.params.groupId, patch);
+      res.json({ success: true, settings: updated });
+    })
+  );
+
+  // ---- Global AI settings (chat personal/DM, trigger mode, model default) ----
+
+  app.get(
+    "/api/global-settings",
+    asyncRoute(async (req, res) => {
+      res.json({ success: true, settings: await loadGlobalSettings() });
+    })
+  );
+
+  app.put(
+    "/api/global-settings",
+    asyncRoute(async (req, res) => {
+      const patch = req.body || {};
+
+      if (patch.aiModel) {
+        const test = await testChatModel(patch.aiModel);
+
+        if (!test.ok) {
+          return res.status(400).json({ success: false, error: `Model tidak valid: ${test.error}` });
+        }
+      }
+
+      const updated = await updateGlobalSettings(patch);
       res.json({ success: true, settings: updated });
     })
   );

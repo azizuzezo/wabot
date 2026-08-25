@@ -56,6 +56,54 @@ export async function embedText(text, taskType = "RETRIEVAL_DOCUMENT") {
   return data?.embedding?.values || [];
 }
 
+// Dipakai admin dashboard untuk validasi nama model chat (AI_BASE_URL/AI_API_KEY,
+// endpoint yang sama dipakai callGeminiGenerate di index.js) sebelum disimpan,
+// supaya typo nama model ketahuan langsung bukan pas bot lagi dipakai user.
+const CHAT_BASE_URL = (
+  process.env.AI_BASE_URL ||
+  "https://generativelanguage.googleapis.com/v1beta"
+).replace(/\/+$/, "");
+
+const CHAT_API_KEY = (
+  process.env.AI_API_KEY ||
+  process.env.GEMINI_API_KEY ||
+  ""
+).trim();
+
+export async function testChatModel(model) {
+  if (!model) {
+    return { ok: true };
+  }
+
+  if (!CHAT_API_KEY) {
+    return { ok: true };
+  }
+
+  try {
+    const url = `${CHAT_BASE_URL}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(
+      CHAT_API_KEY
+    )}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: "Hi" }] }],
+        generationConfig: { maxOutputTokens: 1 },
+      }),
+    });
+
+    if (response.ok) {
+      return { ok: true };
+    }
+
+    const data = await response.json().catch(() => null);
+    return { ok: false, error: data?.error?.message || `HTTP ${response.status}` };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 export function cosineSimilarity(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) {
     return 0;

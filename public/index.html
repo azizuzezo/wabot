@@ -38,6 +38,7 @@
     <button class="tab-btn" data-tab="groups">Grup</button>
     <button class="tab-btn" data-tab="admins">Owner Admin</button>
     <button class="tab-btn" data-tab="knowledge">Knowledge Base</button>
+    <button class="tab-btn" data-tab="ai-settings">Pengaturan AI</button>
   </nav>
 
   <main>
@@ -93,6 +94,18 @@
       <div class="card hidden" id="group-settings-card">
         <h2>Pengaturan Grup: <span id="settings-group-name"></span></h2>
         <div id="group-settings-body" class="toggle-list"></div>
+        <label>Mode trigger AI
+          <select id="group-trigger-mode">
+            <option value="">Ikuti pengaturan global</option>
+            <option value="command">Command (!ai atau mention)</option>
+            <option value="always">Tanpa command (selalu respon)</option>
+          </select>
+        </label>
+        <label>Model AI khusus grup ini
+          <input type="text" id="group-ai-model" placeholder="Kosongkan = ikuti pengaturan global" />
+        </label>
+        <button id="save-group-ai-btn" class="small-btn">Simpan</button>
+        <p id="group-ai-result" class="muted"></p>
       </div>
     </section>
 
@@ -151,6 +164,39 @@
         </div>
         <div id="knowledge-list" class="list"></div>
       </div>
+    </section>
+
+    <section id="tab-ai-settings" class="tab-panel">
+      <div class="card">
+        <h2>Chat Personal (DM)</h2>
+        <p class="muted">Kalau aktif, bot juga merespon chat pribadi (bukan cuma grup) memakai mode trigger &amp; model default di bawah.</p>
+        <div class="toggle-row">
+          <span>Aktifkan AI di chat personal</span>
+          <label><input type="checkbox" id="global-dm-enabled" /></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Mode Trigger AI (default)</h2>
+        <p class="muted">Berlaku untuk chat personal, dan untuk grup yang belum di-override sendiri di tab Grup.</p>
+        <label>
+          <select id="global-trigger-mode">
+            <option value="command">Command (!ai atau mention) — default</option>
+            <option value="always">Tanpa command (AI selalu respon setiap pesan)</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="card">
+        <h2>Model AI (default)</h2>
+        <p class="muted">Nama model yang dipakai kalau grup tidak set model sendiri. Kosongkan untuk pakai default dari env (AI_MODEL).</p>
+        <label>
+          <input type="text" id="global-ai-model" placeholder="Contoh: gemini-3.6-flash" />
+        </label>
+      </div>
+
+      <button id="save-global-settings-btn">Simpan Pengaturan AI</button>
+      <p id="global-settings-result" class="muted"></p>
     </section>
   </main>
 </div>

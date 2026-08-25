@@ -16,6 +16,8 @@ function defaultSettings(groupId) {
     antiSpam: true,
     imgModeration: false,
     badWords: [],
+    aiTriggerMode: null,
+    aiModel: null,
   };
 }
 
@@ -125,7 +127,9 @@ export async function getGroupSettingsWeb(groupId) {
 
   const { data, error } = await database
     .from("bot_group_settings")
-    .select("group_id,welcome,anti_link,ai_enabled,anti_spam,img_moderation,bad_words")
+    .select(
+      "group_id,welcome,anti_link,ai_enabled,anti_spam,img_moderation,bad_words,ai_trigger_mode,ai_model"
+    )
     .eq("group_id", groupId)
     .maybeSingle();
 
@@ -142,6 +146,8 @@ export async function getGroupSettingsWeb(groupId) {
         antiSpam: data.anti_spam === null ? true : Boolean(data.anti_spam),
         imgModeration: Boolean(data.img_moderation),
         badWords: Array.isArray(data.bad_words) ? data.bad_words : [],
+        aiTriggerMode: data.ai_trigger_mode || null,
+        aiModel: data.ai_model || null,
       }
     : defaultSettings(groupId);
 
@@ -165,6 +171,8 @@ export async function updateGroupSettingsWeb(groupId, patch) {
     anti_spam: updated.antiSpam,
     img_moderation: updated.imgModeration,
     bad_words: updated.badWords,
+    ai_trigger_mode: updated.aiTriggerMode || null,
+    ai_model: updated.aiModel || null,
     updated_at: new Date().toISOString(),
   });
 

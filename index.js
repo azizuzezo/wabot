@@ -23,6 +23,7 @@ import {
   allowedGroups as ALLOWED_GROUPS,
   ownerAdminJids,
   groupSettingsCache as groupSettings,
+  globalSettings,
   setSock as setBridgeSock,
   setConnected as setBridgeConnected,
   setQr as setBridgeQr,
@@ -31,6 +32,7 @@ import {
 } from "./admin/bridge.js";
 import { startAdminServer } from "./admin/server.js";
 import { buildKnowledgeContext } from "./admin/knowledge.js";
+import { loadGlobalSettings } from "./admin/globalSettings.js";
 
 // =====================================================
 // MUTER ASSISTANT CONFIG
@@ -213,6 +215,8 @@ function defaultSettings(groupId) {
     antiSpam: true,
     imgModeration: false,
     badWords: [],
+    aiTriggerMode: null,
+    aiModel: null,
   };
 }
 
@@ -227,7 +231,7 @@ async function getGroupSettings(groupId) {
     const { data, error } = await database
       .from("bot_group_settings")
       .select(
-        "group_id,welcome,anti_link,ai_enabled,anti_spam,img_moderation,bad_words"
+        "group_id,welcome,anti_link,ai_enabled,anti_spam,img_moderation,bad_words,ai_trigger_mode,ai_model"
       )
       .eq("group_id", groupId)
       .maybeSingle();
@@ -245,6 +249,8 @@ async function getGroupSettings(groupId) {
         antiSpam: data.anti_spam === null ? true : Boolean(data.anti_spam),
         imgModeration: Boolean(data.img_moderation),
         badWords: Array.isArray(data.bad_words) ? data.bad_words : [],
+        aiTriggerMode: data.ai_trigger_mode || null,
+        aiModel: data.ai_model || null,
       };
     } else {
       await database.from("bot_group_settings").upsert({
@@ -255,6 +261,8 @@ async function getGroupSettings(groupId) {
         anti_spam: settings.antiSpam,
         img_moderation: settings.imgModeration,
         bad_words: settings.badWords,
+        ai_trigger_mode: settings.aiTriggerMode,
+        ai_model: settings.aiModel,
         updated_at: new Date().toISOString(),
       });
     }
@@ -280,6 +288,8 @@ async function saveGroupSettings(groupId) {
     anti_spam: settings.antiSpam,
     img_moderation: settings.imgModeration,
     bad_words: settings.badWords,
+    ai_trigger_mode: settings.aiTriggerMode,
+    ai_model: settings.aiModel,
     updated_at: new Date().toISOString(),
   });
 
@@ -1617,6 +1627,7 @@ async function callGeminiGenerate({
   prompt,
   image = null,
   audio = null,
+  model = null,
 }) {
   const history = await loadAIHistory(groupId);
 
@@ -1652,8 +1663,10 @@ async function callGeminiGenerate({
     },
   ];
 
+  const effectiveModel = model || globalSettings.aiModel || AI_MODEL;
+
   const url = `${AI_BASE_URL}/models/${encodeURIComponent(
-    AI_MODEL
+    effectiveModel
   )}:generateContent?key=${encodeURIComponent(AI_API_KEY)}`;
 
   const knowledgeContext = await buildKnowledgeContext(groupId, prompt).catch(() => "");
@@ -2519,6 +2532,123 @@ function startOtpServer() {
 // START WHATSAPP
 // =====================================================
 
+// =====================================================
+// AI TRIGGER (dipakai untuk grup & chat personal/DM)
+// =====================================================
+
+async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command }) {
+  const triggerMode = settings.aiTriggerMode || globalSettings.aiTriggerMode || "command";
+  const alwaysMode = triggerMode === "always";
+  const aiCommand = command === "!ai" || command.startsWith("!ai ");
+  const mentioned = isBotMentioned(sock, msg);
+
+  if (!alwaysMode && !aiCommand && !mentioned) {
+    return;
+  }
+
+  if (!settings.aiEnabled) {
+    await sock.sendMessage(
+      jid,
+      {
+        text: `🔇 ${BOT_NAME} sedang dinonaktifkan oleh admin.${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
+
+    return;
+  }
+
+  const question = cleanAIQuestion(text);
+
+  if (question.length > MAX_QUESTION_LENGTH) {
+    await sock.sendMessage(
+      jid,
+      {
+        text: `⚠️ Pertanyaan maksimal ${MAX_QUESTION_LENGTH} karakter.${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
+
+    return;
+  }
+
+  const cooldownKey = `${jid}:${sender}`;
+  const last = aiCooldown.get(cooldownKey) || 0;
+
+  if (!msg.key.fromMe && Date.now() - last < AI_COOLDOWN_MS) {
+    const remaining = Math.ceil((AI_COOLDOWN_MS - (Date.now() - last)) / 1000);
+
+    await sock.sendMessage(
+      jid,
+      {
+        text: `⏳ Tunggu ${remaining} detik sebelum tanya AI lagi.${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
+
+    return;
+  }
+
+  aiCooldown.set(cooldownKey, Date.now());
+
+  try {
+    await sock.sendMessage(jid, {
+      react: {
+        text: "🧠",
+        key: msg.key,
+      },
+    });
+  } catch {}
+
+  try {
+    const image = await downloadImageAsBase64(sock, msg);
+    const audio = !image ? await downloadAudioAsBase64(sock, msg) : null;
+
+    const prompt = image
+      ? question || "Jelaskan isi gambar ini secara singkat dan jelas."
+      : audio
+      ? question || "Transkripsikan dan jelaskan isi audio ini."
+      : question || "Halo";
+
+    const answer = await callGeminiGenerate({
+      userName: msg.pushName || "Member",
+      groupId: jid,
+      prompt,
+      image,
+      audio,
+      model: settings.aiModel,
+    });
+
+    await sock.sendMessage(
+      jid,
+      {
+        text: `🤖 *${BOT_NAME}*\n\n${answer}${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
+  } catch (error) {
+    logError("Gemini", error);
+
+    await sock.sendMessage(
+      jid,
+      {
+        text: `⚠️ ${BOT_NAME} gagal memproses permintaan. Coba lagi ya.${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
+  }
+}
+
 async function startWhatsApp() {
   console.log("\n============================================");
   console.log(`🤖 ${BOT_NAME}`);
@@ -2532,6 +2662,9 @@ async function startWhatsApp() {
 
   await loadAllowedGroupsFromDatabase();
   await loadOwnerAdmins();
+  await loadGlobalSettings().catch((error) => {
+    logError("Load global settings", error);
+  });
 
   for (const groupId of ALLOWED_GROUPS) {
     await getGroupSettings(groupId).catch((error) => {
@@ -2778,6 +2911,32 @@ async function startWhatsApp() {
         }
 
         const jid = msg.key.remoteJid;
+
+        // Chat personal (DM) — opsional, diaktifkan lewat admin dashboard.
+        // Hanya menjalankan fitur AI, tidak ada moderasi/anti-spam ala grup.
+        if (jid && jid.endsWith("@s.whatsapp.net") && globalSettings.dmEnabled) {
+          if (msg.key.fromMe) {
+            continue;
+          }
+
+          const dmText = getMessageText(msg.message).trim();
+          const dmCommand = dmText.toLowerCase();
+          const dmSettings = defaultSettings(jid);
+          dmSettings.aiTriggerMode = globalSettings.aiTriggerMode;
+          dmSettings.aiModel = globalSettings.aiModel;
+
+          await handleAiTrigger({
+            sock,
+            msg,
+            jid,
+            sender: jid,
+            settings: dmSettings,
+            text: dmText,
+            command: dmCommand,
+          });
+
+          continue;
+        }
 
         if (!jid || !jid.endsWith("@g.us") || !ALLOWED_GROUPS.has(jid)) {
           continue;
@@ -4937,113 +5096,7 @@ async function startWhatsApp() {
         // AI TEXT / IMAGE
         // =================================================
 
-        const aiCommand = command === "!ai" || command.startsWith("!ai ");
-        const mentioned = isBotMentioned(sock, msg);
-
-        if (!aiCommand && !mentioned) {
-          continue;
-        }
-
-        if (!settings.aiEnabled) {
-          await sock.sendMessage(
-            jid,
-            {
-              text: `🔇 ${BOT_NAME} sedang dinonaktifkan oleh admin grup.${FOOTER}`,
-            },
-            {
-              quoted: msg,
-            }
-          );
-
-          continue;
-        }
-
-        const question = cleanAIQuestion(text);
-
-        if (question.length > MAX_QUESTION_LENGTH) {
-          await sock.sendMessage(
-            jid,
-            {
-              text: `⚠️ Pertanyaan maksimal ${MAX_QUESTION_LENGTH} karakter.${FOOTER}`,
-            },
-            {
-              quoted: msg,
-            }
-          );
-
-          continue;
-        }
-
-        const cooldownKey = `${jid}:${sender}`;
-        const last = aiCooldown.get(cooldownKey) || 0;
-
-        if (!msg.key.fromMe && Date.now() - last < AI_COOLDOWN_MS) {
-          const remaining = Math.ceil((AI_COOLDOWN_MS - (Date.now() - last)) / 1000);
-
-          await sock.sendMessage(
-            jid,
-            {
-              text: `⏳ Tunggu ${remaining} detik sebelum tanya AI lagi.${FOOTER}`,
-            },
-            {
-              quoted: msg,
-            }
-          );
-
-          continue;
-        }
-
-        aiCooldown.set(cooldownKey, Date.now());
-
-        try {
-          await sock.sendMessage(jid, {
-            react: {
-              text: "🧠",
-              key: msg.key,
-            },
-          });
-        } catch {}
-
-        try {
-          const image = await downloadImageAsBase64(sock, msg);
-          const audio = !image ? await downloadAudioAsBase64(sock, msg) : null;
-
-          const prompt = image
-            ? question || "Jelaskan isi gambar ini secara singkat dan jelas."
-            : audio
-            ? question || "Transkripsikan dan jelaskan isi audio ini."
-            : question || "Halo";
-
-          const answer = await callGeminiGenerate({
-            userName: msg.pushName || "Member",
-            groupId: jid,
-            prompt,
-            image,
-            audio,
-          });
-
-          await sock.sendMessage(
-            jid,
-            {
-              text: `🤖 *${BOT_NAME}*\n\n${answer}${FOOTER}`,
-            },
-            {
-              quoted: msg,
-            }
-          );
-        } catch (error) {
-          logError("Gemini", error);
-
-          await sock.sendMessage(
-            jid,
-            {
-              text: `⚠️ ${BOT_NAME} gagal memproses permintaan. Coba lagi ya.${FOOTER}`,
-            },
-            {
-              quoted: msg,
-            }
-          );
-        }
+        await handleAiTrigger({ sock, msg, jid, sender, settings, text, command });
       } catch (error) {
         logError("Message handler", error);
       }
