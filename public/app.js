@@ -37,12 +37,17 @@ function formatUptime(ms) {
 
 // ---- Auth ----
 
-let session = { role: null, allowedGroups: null, username: null };
+let session = { role: null, allowedGroups: null, username: null, canAccessLiveChat: true };
 
 function applyRoleUI() {
   const isScoped = session.role !== "super";
 
   $$(".super-only").forEach((el) => el.classList.toggle("hidden", isScoped));
+
+  const inboxTabBtn = document.querySelector('.tab-btn[data-tab="inbox"]');
+  if (inboxTabBtn) {
+    inboxTabBtn.classList.toggle("hidden", !session.canAccessLiveChat);
+  }
 
   const badge = $("#role-badge");
   badge.textContent = isScoped ? `scoped: ${(session.allowedGroups || []).join(", ")}` : "super admin";
@@ -64,7 +69,12 @@ async function checkAuth() {
   const data = await api("/api/me");
   showScreen(data.authenticated);
   if (data.authenticated) {
-    session = { role: data.role, allowedGroups: data.allowedGroups, username: data.username };
+    session = {
+      role: data.role,
+      allowedGroups: data.allowedGroups,
+      username: data.username,
+      canAccessLiveChat: data.canAccessLiveChat,
+    };
     initApp();
   }
 }
@@ -78,7 +88,12 @@ $("#login-form").addEventListener("submit", async (e) => {
   try {
     await api("/api/login", { method: "POST", body: JSON.stringify({ username, password }) });
     const me = await api("/api/me");
-    session = { role: me.role, allowedGroups: me.allowedGroups, username: me.username };
+    session = {
+      role: me.role,
+      allowedGroups: me.allowedGroups,
+      username: me.username,
+      canAccessLiveChat: me.canAccessLiveChat,
+    };
     showScreen(true);
     initApp();
   } catch (error) {
@@ -527,17 +542,35 @@ async function loadAdminUsers() {
   }
 
   for (const user of users) {
+    const canAccessLiveChat = user.can_access_live_chat !== false;
+
     const row = document.createElement("div");
     row.className = "list-item";
     row.innerHTML = `
       <div class="main">
         <strong>${user.username} <span class="tag">${user.role}</span></strong>
         <span>${user.role === "super" ? "Akses penuh" : (user.allowed_groups || []).join(", ")}</span>
+        <span>Live Chat: ${canAccessLiveChat ? "aktif" : "nonaktif"}</span>
       </div>
+      <button class="small-btn ghost-btn toggle-live-chat-btn" type="button">
+        ${canAccessLiveChat ? "Nonaktifkan Live Chat" : "Aktifkan Live Chat"}
+      </button>
       <button class="small-btn danger">Hapus</button>
     `;
 
-    row.querySelector("button").addEventListener("click", async () => {
+    row.querySelector(".toggle-live-chat-btn").addEventListener("click", async () => {
+      try {
+        await api(`/api/admin-users/${encodeURIComponent(user.username)}/live-chat-access`, {
+          method: "PATCH",
+          body: JSON.stringify({ canAccessLiveChat: !canAccessLiveChat }),
+        });
+        loadAdminUsers();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
+
+    row.querySelector(".danger").addEventListener("click", async () => {
       try {
         await api(`/api/admin-users/${encodeURIComponent(user.username)}`, { method: "DELETE" });
         loadAdminUsers();
@@ -558,6 +591,7 @@ $("#add-admin-user-btn").addEventListener("click", async () => {
     .split(",")
     .map((g) => g.trim())
     .filter(Boolean);
+  const canAccessLiveChat = $("#new-admin-user-live-chat").checked;
   const result = $("#admin-user-result");
 
   result.textContent = "Membuat akun...";
@@ -565,12 +599,13 @@ $("#add-admin-user-btn").addEventListener("click", async () => {
   try {
     await api("/api/admin-users", {
       method: "POST",
-      body: JSON.stringify({ username, password, role, allowedGroups }),
+      body: JSON.stringify({ username, password, role, allowedGroups, canAccessLiveChat }),
     });
     result.textContent = "✅ Akun dibuat";
     $("#new-admin-user-username").value = "";
     $("#new-admin-user-password").value = "";
     $("#new-admin-user-groups").value = "";
+    $("#new-admin-user-live-chat").checked = true;
     loadAdminUsers();
   } catch (error) {
     result.textContent = `❌ ${error.message}`;

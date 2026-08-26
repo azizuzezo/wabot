@@ -15,6 +15,7 @@ import {
   requireSuper,
   canAccessGroup,
   canAccessChat,
+  canAccessLiveChat,
 } from "./auth.js";
 import {
   listGroups,
@@ -35,7 +36,12 @@ import {
 } from "./knowledge.js";
 import { loadGlobalSettings, updateGlobalSettings } from "./globalSettings.js";
 import { testChatModel } from "./gemini.js";
-import { listAdminUsers, createAdminUser, deleteAdminUser } from "./adminUsers.js";
+import {
+  listAdminUsers,
+  createAdminUser,
+  setAdminUserLiveChatAccess,
+  deleteAdminUser,
+} from "./adminUsers.js";
 import { listChats, getMessages, setTakeover, sendChatMessage } from "./conversations.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -113,6 +119,7 @@ export function startAdminServer({ botName } = {}) {
       req.session.username = String(username || "").trim();
       req.session.role = result.role;
       req.session.allowedGroups = result.allowedGroups;
+      req.session.canAccessLiveChat = result.canAccessLiveChat;
       res.json({ success: true });
     })
   );
@@ -131,6 +138,7 @@ export function startAdminServer({ botName } = {}) {
       username: req.session.username,
       role: req.session.role,
       allowedGroups: req.session.allowedGroups,
+      canAccessLiveChat: canAccessLiveChat(req),
     });
   });
 
@@ -348,15 +356,25 @@ export function startAdminServer({ botName } = {}) {
     "/api/admin-users",
     requireSuper,
     asyncRoute(async (req, res) => {
-      const { username, password, role, allowedGroups } = req.body || {};
+      const { username, password, role, allowedGroups, canAccessLiveChat } = req.body || {};
       const user = await createAdminUser({
         username,
         password,
         role,
         allowedGroups,
+        canAccessLiveChat,
         createdBy: req.session.username,
       });
       res.json({ success: true, user });
+    })
+  );
+
+  app.patch(
+    "/api/admin-users/:username/live-chat-access",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      await setAdminUserLiveChatAccess(req.params.username, Boolean(req.body?.canAccessLiveChat));
+      res.json({ success: true });
     })
   );
 
@@ -456,6 +474,10 @@ export function startAdminServer({ botName } = {}) {
   app.get(
     "/api/chats",
     asyncRoute(async (req, res) => {
+      if (!canAccessLiveChat(req)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke Live Chat" });
+      }
+
       const allowedGroups = req.session.role === "super" ? null : req.session.allowedGroups || [];
       res.json({ success: true, chats: await listChats({ allowedGroups }) });
     })
@@ -526,6 +548,10 @@ export function startAdminServer({ botName } = {}) {
   );
 
   app.get("/api/chats/stream", (req, res) => {
+    if (!canAccessLiveChat(req)) {
+      return res.status(403).json({ success: false, error: "Tidak punya akses ke Live Chat" });
+    }
+
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",

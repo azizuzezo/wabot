@@ -21,7 +21,7 @@ export async function verifyCredentials(username, password) {
       : String(password || "") === ADMIN_PASSWORD;
 
     if (ok) {
-      return { role: "super", allowedGroups: null };
+      return { role: "super", allowedGroups: null, canAccessLiveChat: true };
     }
 
     return null;
@@ -42,6 +42,7 @@ export async function verifyCredentials(username, password) {
   return {
     role: user.role === "super" ? "super" : "scoped",
     allowedGroups: Array.isArray(user.allowed_groups) ? user.allowed_groups : [],
+    canAccessLiveChat: user.can_access_live_chat !== false,
   };
 }
 
@@ -70,10 +71,25 @@ export function canAccessGroup(req, groupId) {
   return Array.isArray(req.session?.allowedGroups) && req.session.allowedGroups.includes(groupId);
 }
 
-// Live Chat inbox: chat grup ikut aturan canAccessGroup (whitelist per akun
-// scoped). Chat personal (DM) belum punya konsep scoping per-admin di data
-// model — semua admin yang login (super maupun scoped) boleh akses.
+// Master switch: super admin bisa menonaktifkan akses tab Live Chat per akun
+// (kolom can_access_live_chat di bot_admin_users). Akun super selalu boleh.
+export function canAccessLiveChat(req) {
+  if (req.session?.role === "super") {
+    return true;
+  }
+
+  return req.session?.canAccessLiveChat !== false;
+}
+
+// Live Chat inbox: dicek dulu master switch canAccessLiveChat, lalu untuk
+// chat grup ikut aturan canAccessGroup (whitelist per akun scoped). Chat
+// personal (DM) belum punya konsep scoping per-admin di data model — semua
+// admin yang boleh akses Live Chat (super maupun scoped) boleh akses DM.
 export function canAccessChat(req, jid, isGroup) {
+  if (!canAccessLiveChat(req)) {
+    return false;
+  }
+
   if (!isGroup) {
     return true;
   }
