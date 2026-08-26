@@ -117,7 +117,12 @@
         <div class="inbox-list-pane">
           <div class="inbox-list-header">
             <h2>Live Chat</h2>
-            <button id="inbox-refresh-btn" class="ghost-btn small-btn" type="button">⟳</button>
+            <button id="inbox-refresh-btn" class="icon-btn" type="button" aria-label="Muat ulang">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                <polyline points="21 3 21 9 15 9" />
+              </svg>
+            </button>
           </div>
           <div id="inbox-chat-list" class="list"></div>
         </div>
@@ -128,7 +133,12 @@
           <div id="inbox-thread-messages" class="inbox-thread-messages"></div>
           <div class="inbox-thread-composer hidden" id="inbox-composer">
             <textarea id="inbox-compose-text" rows="2" placeholder="Ketik pesan..."></textarea>
-            <button id="inbox-send-btn" type="button">Kirim</button>
+            <button id="inbox-send-btn" class="send-btn" type="button" aria-label="Kirim pesan">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            </button>
           </div>
         </div>
       </div>

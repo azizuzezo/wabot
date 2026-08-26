@@ -595,6 +595,33 @@ function formatChatTime(iso) {
   });
 }
 
+const AVATAR_PALETTE = ["#2564cf", "#6b46c1", "#0f766e", "#a35b00", "#be185d", "#4d7c0f", "#475569"];
+
+function avatarColor(seed) {
+  let hash = 0;
+  const str = String(seed || "?");
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  }
+  return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
+}
+
+function initials(name) {
+  const clean = String(name || "").trim();
+  if (!clean) return "?";
+  const parts = clean.split(/\s+/).filter(Boolean);
+  return parts.length === 1 ? parts[0].slice(0, 2).toUpperCase() : (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+function avatarHtml(name, seed) {
+  return `<span class="avatar" style="background:${avatarColor(seed || name)}">${escapeHtml(initials(name))}</span>`;
+}
+
+function statusPillHtml(takenOver, takenOverBy) {
+  const label = takenOver ? `Diambil alih${takenOverBy ? ` oleh ${escapeHtml(takenOverBy)}` : ""}` : "Bot aktif";
+  return `<span class="status-pill inline"><span class="dot ${takenOver ? "warn" : "on"}"></span><span>${label}</span></span>`;
+}
+
 let chatStream = null;
 let chats = [];
 let activeChatJid = null;
@@ -611,12 +638,19 @@ function renderChatList() {
   for (const chat of chats) {
     const row = document.createElement("div");
     row.className = `chat-row${chat.jid === activeChatJid ? " active" : ""}`;
+    const name = chat.name || chat.jid;
     row.innerHTML = `
-      <div class="chat-row-top">
-        <span class="chat-row-name">${escapeHtml(chat.name || chat.jid)}</span>
-        <span class="takeover-badge ${chat.takenOver ? "human" : "bot"}">${chat.takenOver ? "🧑 Diambil" : "🤖 Bot"}</span>
+      ${avatarHtml(name, chat.jid)}
+      <div class="chat-row-body">
+        <div class="chat-row-top">
+          <span class="chat-row-name">${escapeHtml(name)}</span>
+          <span class="chat-row-time">${formatChatTime(chat.lastMessageAt)}</span>
+        </div>
+        <div class="chat-row-bottom">
+          <span class="chat-row-preview">${escapeHtml(chat.lastMessagePreview || "")}</span>
+          <span class="dot ${chat.takenOver ? "warn" : "on"}" title="${chat.takenOver ? "Diambil alih" : "Bot aktif"}"></span>
+        </div>
       </div>
-      <span class="chat-row-preview">${escapeHtml(chat.lastMessagePreview || "")}</span>
     `;
     row.addEventListener("click", () => openChat(chat.jid));
     list.appendChild(row);
@@ -637,15 +671,18 @@ function renderThreadHeader(chat) {
     return;
   }
 
+  const name = chat.name || chat.jid;
+
   header.innerHTML = `
-    <div class="thread-title">
-      <strong>${escapeHtml(chat.name || chat.jid)}</strong>
-      <span>${escapeHtml(chat.jid)}</span>
+    <div class="thread-who">
+      ${avatarHtml(name, chat.jid)}
+      <div class="thread-title">
+        <strong>${escapeHtml(name)}</strong>
+        <span>${escapeHtml(chat.jid)}</span>
+      </div>
     </div>
     <div class="thread-actions">
-      <span class="takeover-badge ${chat.takenOver ? "human" : "bot"}">
-        ${chat.takenOver ? `🧑 Diambil alih${chat.takenOverBy ? ` oleh ${escapeHtml(chat.takenOverBy)}` : ""}` : "🤖 Bot aktif"}
-      </span>
+      ${statusPillHtml(chat.takenOver, chat.takenOverBy)}
       <button id="inbox-toggle-takeover-btn" class="small-btn ${chat.takenOver ? "" : "ghost-btn"}" type="button">
         ${chat.takenOver ? "Lepas ke Bot" : "Ambil Alih"}
       </button>
@@ -673,13 +710,9 @@ function appendBubble(msg) {
   const bubble = document.createElement("div");
   bubble.className = `bubble ${isOut ? "bubble-out" : "bubble-in"}${isOut && msg.fromBot ? " bubble-bot" : ""}`;
 
-  const label = isOut
-    ? msg.fromBot
-      ? "🤖 Bot"
-      : `🧑 ${msg.fromAdmin || "Admin"}`
-    : msg.pushName || msg.senderJid || "";
+  const label = isOut ? (msg.fromBot ? "Bot" : msg.fromAdmin || "Admin") : msg.pushName || msg.senderJid || "";
 
-  bubble.innerHTML = `${escapeHtml(msg.text || "")}<span class="bubble-meta">${escapeHtml(label)} · ${formatChatTime(msg.createdAt)}</span>`;
+  bubble.innerHTML = `${escapeHtml(msg.text || "")}<span class="bubble-meta"><span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span></span>`;
 
   container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
@@ -708,7 +741,7 @@ async function openChat(jid) {
       }
     }
   } catch (error) {
-    messagesEl.innerHTML = `<p class="muted">❌ ${escapeHtml(error.message)}</p>`;
+    messagesEl.innerHTML = `<p class="muted">Gagal memuat pesan: ${escapeHtml(error.message)}</p>`;
   }
 }
 
@@ -739,7 +772,11 @@ $("#inbox-compose-text").addEventListener("keydown", (e) => {
   }
 });
 
-$("#inbox-refresh-btn").addEventListener("click", () => loadChatList());
+$("#inbox-refresh-btn").addEventListener("click", (e) => {
+  const btn = e.currentTarget;
+  btn.classList.add("spinning");
+  loadChatList().finally(() => btn.classList.remove("spinning"));
+});
 
 function connectChatStream() {
   if (chatStream) return;
