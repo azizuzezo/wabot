@@ -51,9 +51,14 @@ async function extractTextFromUpload(file) {
   const name = String(file.originalname || "").toLowerCase();
 
   if (name.endsWith(".pdf")) {
-    const { default: pdfParse } = await import("pdf-parse");
-    const result = await pdfParse(file.buffer);
-    return result.text || "";
+    const { PDFParse } = await import("pdf-parse");
+    const parser = new PDFParse({ data: file.buffer });
+    try {
+      const result = await parser.getText();
+      return result.text || "";
+    } finally {
+      await parser.destroy();
+    }
   }
 
   return file.buffer.toString("utf8");
@@ -261,7 +266,16 @@ export function startAdminServer({ botName } = {}) {
     "/api/global-settings",
     requireSuper,
     asyncRoute(async (req, res) => {
-      res.json({ success: true, settings: await loadGlobalSettings() });
+      const settings = await loadGlobalSettings();
+      res.json({
+        success: true,
+        settings: {
+          ...settings,
+          aiApiKey: undefined,
+          aiApiKeySet: Boolean(settings.aiApiKey),
+          aiApiKeyPreview: settings.aiApiKey ? `••••${settings.aiApiKey.slice(-4)}` : null,
+        },
+      });
     })
   );
 

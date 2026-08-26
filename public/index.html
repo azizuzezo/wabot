@@ -170,6 +170,17 @@
 
     <section id="tab-ai-settings" class="tab-panel">
       <div class="card">
+        <h2>Nama Bot &amp; Credit</h2>
+        <p class="muted">Nama &amp; signature yang tampil di setiap balasan bot. Kosongkan untuk pakai default ("Muter Assistant").</p>
+        <label>Nama Bot
+          <input type="text" id="global-bot-name" placeholder="Contoh: Muter Assistant" />
+        </label>
+        <label>Credit / Signature
+          <input type="text" id="global-bot-credit" placeholder="Contoh: aibot muter.my.id by duacincin.id" />
+        </label>
+      </div>
+
+      <div class="card">
         <h2>Chat Personal (DM)</h2>
         <p class="muted">Kalau aktif, bot juga merespon chat pribadi (bukan cuma grup) memakai mode trigger &amp; model default di bawah.</p>
         <div class="toggle-row">
@@ -194,6 +205,26 @@
         <p class="muted">Nama model yang dipakai kalau grup tidak set model sendiri. Kosongkan untuk pakai default dari env (AI_MODEL).</p>
         <label>
           <input type="text" id="global-ai-model" placeholder="Contoh: gemini-3.6-flash" />
+        </label>
+      </div>
+
+      <div class="card">
+        <h2>API Key &amp; Base URL AI</h2>
+        <p class="muted">Override API key/endpoint chat AI tanpa edit .env. Kosongkan untuk pakai default dari env (AI_API_KEY / AI_BASE_URL).</p>
+        <label>API Key
+          <input type="password" id="global-ai-api-key" placeholder="Kosongkan untuk tidak mengubah" autocomplete="off" />
+        </label>
+        <p id="global-ai-api-key-status" class="muted"></p>
+        <label>Base URL
+          <input type="text" id="global-ai-base-url" placeholder="https://generativelanguage.googleapis.com/v1beta" />
+        </label>
+      </div>
+
+      <div class="card">
+        <h2>System Prompt AI (tambahan)</h2>
+        <p class="muted">Instruksi tambahan yang disisipkan ke system prompt bawaan bot (tidak menggantikan aturan dasar, hanya menambah).</p>
+        <label>
+          <textarea id="global-ai-system-prompt" rows="6" placeholder="Contoh: Selalu tawarkan promo bulan ini di akhir jawaban."></textarea>
         </label>
       </div>
 

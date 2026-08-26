@@ -13,12 +13,18 @@ export const allowedGroups = new Set();
 export const ownerAdminJids = new Set();
 export const groupSettingsCache = new Map();
 
-// Global AI config (chat personal/DM, mode trigger, model default) — satu
-// objek dipakai bersama oleh index.js (baca) dan admin dashboard (tulis).
+// Global AI config (chat personal/DM, mode trigger, model default, branding,
+// system prompt, API key/base URL override) — satu objek dipakai bersama
+// oleh index.js (baca) dan admin dashboard (tulis).
 export const globalSettings = {
   dmEnabled: false,
   aiTriggerMode: "command",
   aiModel: null,
+  botName: null,
+  botCredit: null,
+  aiSystemPrompt: null,
+  aiApiKey: null,
+  aiBaseUrl: null,
 };
 
 export const botState = {

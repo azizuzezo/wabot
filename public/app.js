@@ -469,6 +469,14 @@ async function loadGlobalSettings() {
   $("#global-dm-enabled").checked = Boolean(settings.dmEnabled);
   $("#global-trigger-mode").value = settings.aiTriggerMode || "command";
   $("#global-ai-model").value = settings.aiModel || "";
+  $("#global-bot-name").value = settings.botName || "";
+  $("#global-bot-credit").value = settings.botCredit || "";
+  $("#global-ai-system-prompt").value = settings.aiSystemPrompt || "";
+  $("#global-ai-base-url").value = settings.aiBaseUrl || "";
+  $("#global-ai-api-key").value = "";
+  $("#global-ai-api-key-status").textContent = settings.aiApiKeySet
+    ? `Tersimpan (${settings.aiApiKeyPreview})`
+    : "Belum diset — pakai default dari env";
 }
 
 $("#save-global-settings-btn").addEventListener("click", async () => {
@@ -476,15 +484,27 @@ $("#save-global-settings-btn").addEventListener("click", async () => {
   result.textContent = "Menyimpan...";
 
   try {
+    const body = {
+      dmEnabled: $("#global-dm-enabled").checked,
+      aiTriggerMode: $("#global-trigger-mode").value,
+      aiModel: $("#global-ai-model").value.trim() || null,
+      botName: $("#global-bot-name").value.trim() || null,
+      botCredit: $("#global-bot-credit").value.trim() || null,
+      aiSystemPrompt: $("#global-ai-system-prompt").value.trim() || null,
+      aiBaseUrl: $("#global-ai-base-url").value.trim() || null,
+    };
+
+    const apiKey = $("#global-ai-api-key").value.trim();
+    if (apiKey) {
+      body.aiApiKey = apiKey;
+    }
+
     await api("/api/global-settings", {
       method: "PUT",
-      body: JSON.stringify({
-        dmEnabled: $("#global-dm-enabled").checked,
-        aiTriggerMode: $("#global-trigger-mode").value,
-        aiModel: $("#global-ai-model").value.trim() || null,
-      }),
+      body: JSON.stringify(body),
     });
     result.textContent = "✅ Tersimpan";
+    loadGlobalSettings();
   } catch (error) {
     result.textContent = `❌ ${error.message}`;
   }
