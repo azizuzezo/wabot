@@ -68,6 +68,24 @@ export function setBotName(name) {
   botState.botName = name;
 }
 
+// Live Chat inbox — status takeover per percakapan (jid -> true kalau lagi
+// dipegang manusia). Dimuat dari DB saat startup (loadChatTakeoverState di
+// admin/conversations.js) lalu dibaca sinkron oleh index.js supaya bot tahu
+// harus diam tanpa roundtrip DB di setiap pesan masuk.
+export const chatTakeoverState = new Map();
+
+export function setChatTakeover(jid, takenOver) {
+  if (takenOver) {
+    chatTakeoverState.set(jid, true);
+  } else {
+    chatTakeoverState.delete(jid);
+  }
+}
+
+export function isChatTakenOver(jid) {
+  return chatTakeoverState.get(jid) === true;
+}
+
 export function getStatusSnapshot() {
   return {
     connected: botState.connected,

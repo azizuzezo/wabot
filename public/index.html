@@ -37,6 +37,7 @@
   <nav class="tabs">
     <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
     <button class="tab-btn" data-tab="groups">Grup</button>
+    <button class="tab-btn" data-tab="inbox">Live Chat</button>
     <button class="tab-btn super-only" data-tab="admins">Owner Admin</button>
     <button class="tab-btn" data-tab="knowledge">Knowledge Base</button>
     <button class="tab-btn super-only" data-tab="ai-settings">Pengaturan AI</button>
@@ -108,6 +109,28 @@
         </label>
         <button id="save-group-ai-btn" class="small-btn">Simpan</button>
         <p id="group-ai-result" class="muted"></p>
+      </div>
+    </section>
+
+    <section id="tab-inbox" class="tab-panel">
+      <div class="inbox-layout">
+        <div class="inbox-list-pane">
+          <div class="inbox-list-header">
+            <h2>Live Chat</h2>
+            <button id="inbox-refresh-btn" class="ghost-btn small-btn" type="button">⟳</button>
+          </div>
+          <div id="inbox-chat-list" class="list"></div>
+        </div>
+        <div class="inbox-thread-pane">
+          <div id="inbox-thread-header" class="inbox-thread-header">
+            <span class="muted">Pilih percakapan di sebelah kiri</span>
+          </div>
+          <div id="inbox-thread-messages" class="inbox-thread-messages"></div>
+          <div class="inbox-thread-composer hidden" id="inbox-composer">
+            <textarea id="inbox-compose-text" rows="2" placeholder="Ketik pesan..."></textarea>
+            <button id="inbox-send-btn" type="button">Kirim</button>
+          </div>
+        </div>
       </div>
     </section>
 

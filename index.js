@@ -25,6 +25,7 @@ import {
   groupSettingsCache as groupSettings,
   globalSettings,
   botEvents,
+  isChatTakenOver,
   setSock as setBridgeSock,
   setConnected as setBridgeConnected,
   setQr as setBridgeQr,
@@ -34,6 +35,7 @@ import {
 import { startAdminServer } from "./admin/server.js";
 import { buildKnowledgeContext } from "./admin/knowledge.js";
 import { loadGlobalSettings } from "./admin/globalSettings.js";
+import { recordMessage as recordChatMessage, loadChatTakeoverState } from "./admin/conversations.js";
 
 // =====================================================
 // MUTER ASSISTANT CONFIG
@@ -2572,6 +2574,12 @@ function startOtpServer() {
 // =====================================================
 
 async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command }) {
+  // Chat ini lagi diambil alih admin lewat Live Chat — bot diam total, tidak
+  // ikut menjawab supaya tidak tabrakan dengan balasan manusia.
+  if (isChatTakenOver(jid)) {
+    return;
+  }
+
   const triggerMode = settings.aiTriggerMode || globalSettings.aiTriggerMode || "command";
   const alwaysMode = triggerMode === "always";
   const aiCommand = command === "!ai" || command.startsWith("!ai ");
@@ -2669,6 +2677,14 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
         quoted: msg,
       }
     );
+
+    recordChatMessage({
+      jid,
+      direction: "out",
+      isGroup: jid.endsWith("@g.us"),
+      text: answer,
+      fromBot: true,
+    }).catch((error) => logError("Record chat message", error));
   } catch (error) {
     logError("Gemini", error);
 
@@ -2701,6 +2717,10 @@ async function startWhatsApp() {
     logError("Load global settings", error);
   });
   applyBrandingFromSettings();
+
+  await loadChatTakeoverState().catch((error) => {
+    logError("Load chat takeover state", error);
+  });
 
   for (const groupId of ALLOWED_GROUPS) {
     await getGroupSettings(groupId).catch((error) => {
@@ -2948,28 +2968,46 @@ async function startWhatsApp() {
 
         const jid = msg.key.remoteJid;
 
-        // Chat personal (DM) — opsional, diaktifkan lewat admin dashboard.
-        // Hanya menjalankan fitur AI, tidak ada moderasi/anti-spam ala grup.
-        if (jid && jid.endsWith("@s.whatsapp.net") && globalSettings.dmEnabled) {
+        // Chat personal (DM) — direkam ke Live Chat inbox selalu; fitur AI
+        // sendiri tetap opsional, diaktifkan lewat admin dashboard.
+        // @lid = chat personal yang dialamatkan via Linked ID (privacy/LID
+        // rollout WhatsApp) — bukan cuma @s.whatsapp.net yang klasik.
+        const isPersonalChat = jid && (jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid"));
+
+        if (isPersonalChat) {
           if (msg.key.fromMe) {
             continue;
           }
 
           const dmText = getMessageText(msg.message).trim();
-          const dmCommand = dmText.toLowerCase();
-          const dmSettings = defaultSettings(jid);
-          dmSettings.aiTriggerMode = globalSettings.aiTriggerMode;
-          dmSettings.aiModel = globalSettings.aiModel;
 
-          await handleAiTrigger({
-            sock,
-            msg,
+          recordChatMessage({
+            id: msg.key.id,
             jid,
-            sender: jid,
-            settings: dmSettings,
+            direction: "in",
+            isGroup: false,
+            senderJid: jid,
+            pushName: msg.pushName,
             text: dmText,
-            command: dmCommand,
-          });
+            chatName: msg.pushName,
+          }).catch((error) => logError("Record chat message", error));
+
+          if (globalSettings.dmEnabled) {
+            const dmCommand = dmText.toLowerCase();
+            const dmSettings = defaultSettings(jid);
+            dmSettings.aiTriggerMode = globalSettings.aiTriggerMode;
+            dmSettings.aiModel = globalSettings.aiModel;
+
+            await handleAiTrigger({
+              sock,
+              msg,
+              jid,
+              sender: jid,
+              settings: dmSettings,
+              text: dmText,
+              command: dmCommand,
+            });
+          }
 
           continue;
         }
@@ -3140,6 +3178,17 @@ async function startWhatsApp() {
 
         if (!msg.key.fromMe) {
           bumpMessageStat(jid, sender);
+
+          recordChatMessage({
+            id: msg.key.id,
+            jid,
+            direction: "in",
+            isGroup: true,
+            senderJid: sender,
+            pushName: msg.pushName,
+            text,
+            chatName: metadata?.subject,
+          }).catch((error) => logError("Record chat message", error));
 
           if (!text.startsWith("!")) {
             pushMessageLog(jid, {

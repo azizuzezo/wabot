@@ -577,6 +577,236 @@ $("#add-admin-user-btn").addEventListener("click", async () => {
   }
 });
 
+// ---- Live Chat inbox (DM + grup, dengan takeover) ----
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
+}
+
+function formatChatTime(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString("id-ID", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+let chatStream = null;
+let chats = [];
+let activeChatJid = null;
+
+function renderChatList() {
+  const list = $("#inbox-chat-list");
+  list.innerHTML = "";
+
+  if (!chats.length) {
+    list.innerHTML = '<p class="muted">Belum ada percakapan.</p>';
+    return;
+  }
+
+  for (const chat of chats) {
+    const row = document.createElement("div");
+    row.className = `chat-row${chat.jid === activeChatJid ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="chat-row-top">
+        <span class="chat-row-name">${escapeHtml(chat.name || chat.jid)}</span>
+        <span class="takeover-badge ${chat.takenOver ? "human" : "bot"}">${chat.takenOver ? "🧑 Diambil" : "🤖 Bot"}</span>
+      </div>
+      <span class="chat-row-preview">${escapeHtml(chat.lastMessagePreview || "")}</span>
+    `;
+    row.addEventListener("click", () => openChat(chat.jid));
+    list.appendChild(row);
+  }
+}
+
+async function loadChatList() {
+  const { chats: data } = await api("/api/chats");
+  chats = data;
+  renderChatList();
+}
+
+function renderThreadHeader(chat) {
+  const header = $("#inbox-thread-header");
+
+  if (!chat) {
+    header.innerHTML = '<span class="muted">Pilih percakapan di sebelah kiri</span>';
+    return;
+  }
+
+  header.innerHTML = `
+    <div class="thread-title">
+      <strong>${escapeHtml(chat.name || chat.jid)}</strong>
+      <span>${escapeHtml(chat.jid)}</span>
+    </div>
+    <div class="thread-actions">
+      <span class="takeover-badge ${chat.takenOver ? "human" : "bot"}">
+        ${chat.takenOver ? `🧑 Diambil alih${chat.takenOverBy ? ` oleh ${escapeHtml(chat.takenOverBy)}` : ""}` : "🤖 Bot aktif"}
+      </span>
+      <button id="inbox-toggle-takeover-btn" class="small-btn ${chat.takenOver ? "" : "ghost-btn"}" type="button">
+        ${chat.takenOver ? "Lepas ke Bot" : "Ambil Alih"}
+      </button>
+    </div>
+  `;
+
+  $("#inbox-toggle-takeover-btn").addEventListener("click", async () => {
+    try {
+      const action = chat.takenOver ? "release" : "takeover";
+      await api(`/api/chats/${encodeURIComponent(chat.jid)}/${action}`, { method: "POST" });
+      await loadChatList();
+      renderThreadHeader(chats.find((c) => c.jid === chat.jid) || chat);
+    } catch (error) {
+      alert(error.message);
+    }
+  });
+}
+
+function appendBubble(msg) {
+  const container = $("#inbox-thread-messages");
+  const empty = container.querySelector(".muted");
+  if (empty) empty.remove();
+
+  const isOut = msg.direction === "out";
+  const bubble = document.createElement("div");
+  bubble.className = `bubble ${isOut ? "bubble-out" : "bubble-in"}${isOut && msg.fromBot ? " bubble-bot" : ""}`;
+
+  const label = isOut
+    ? msg.fromBot
+      ? "🤖 Bot"
+      : `🧑 ${msg.fromAdmin || "Admin"}`
+    : msg.pushName || msg.senderJid || "";
+
+  bubble.innerHTML = `${escapeHtml(msg.text || "")}<span class="bubble-meta">${escapeHtml(label)} · ${formatChatTime(msg.createdAt)}</span>`;
+
+  container.appendChild(bubble);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function openChat(jid) {
+  activeChatJid = jid;
+  renderChatList();
+
+  const chat = chats.find((c) => c.jid === jid) || { jid };
+  renderThreadHeader(chat);
+  $("#inbox-composer").classList.remove("hidden");
+
+  const messagesEl = $("#inbox-thread-messages");
+  messagesEl.innerHTML = '<p class="muted">Memuat...</p>';
+
+  try {
+    const { messages } = await api(`/api/chats/${encodeURIComponent(jid)}/messages`);
+    messagesEl.innerHTML = "";
+
+    if (!messages.length) {
+      messagesEl.innerHTML = '<p class="muted">Belum ada pesan.</p>';
+    } else {
+      for (const msg of messages) {
+        appendBubble(msg);
+      }
+    }
+  } catch (error) {
+    messagesEl.innerHTML = `<p class="muted">❌ ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+$("#inbox-send-btn").addEventListener("click", async () => {
+  if (!activeChatJid) return;
+
+  const textarea = $("#inbox-compose-text");
+  const text = textarea.value.trim();
+  if (!text) return;
+
+  textarea.value = "";
+
+  try {
+    await api(`/api/chats/${encodeURIComponent(activeChatJid)}/messages`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  } catch (error) {
+    alert(error.message);
+    textarea.value = text;
+  }
+});
+
+$("#inbox-compose-text").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    $("#inbox-send-btn").click();
+  }
+});
+
+$("#inbox-refresh-btn").addEventListener("click", () => loadChatList());
+
+function connectChatStream() {
+  if (chatStream) return;
+
+  chatStream = new EventSource("/api/chats/stream");
+  chatStream.onmessage = (event) => {
+    let payload;
+
+    try {
+      payload = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (payload.type === "message") {
+      const existing = chats.find((c) => c.jid === payload.jid);
+
+      if (existing) {
+        existing.lastMessagePreview = String(payload.text || "").slice(0, 120);
+        existing.lastMessageAt = payload.createdAt;
+      } else {
+        chats.unshift({
+          jid: payload.jid,
+          isGroup: payload.isGroup,
+          name: payload.pushName || payload.jid,
+          takenOver: false,
+          takenOverBy: null,
+          lastMessageAt: payload.createdAt,
+          lastMessagePreview: String(payload.text || "").slice(0, 120),
+        });
+      }
+
+      chats.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0));
+      renderChatList();
+
+      if (payload.jid === activeChatJid) {
+        appendBubble(payload);
+      }
+    } else if (payload.type === "takeover") {
+      const existing = chats.find((c) => c.jid === payload.jid);
+
+      if (existing) {
+        existing.takenOver = payload.takenOver;
+        existing.takenOverBy = payload.byAdmin;
+      }
+
+      renderChatList();
+
+      if (payload.jid === activeChatJid) {
+        renderThreadHeader(
+          chats.find((c) => c.jid === payload.jid) || {
+            jid: payload.jid,
+            takenOver: payload.takenOver,
+            takenOverBy: payload.byAdmin,
+          }
+        );
+      }
+    }
+  };
+
+  chatStream.onerror = () => {
+    chatStream.close();
+    chatStream = null;
+    setTimeout(connectChatStream, 3000);
+  };
+}
+
 // ---- Init ----
 
 function initApp() {
@@ -584,12 +814,15 @@ function initApp() {
 
   if (appInitialized) {
     connectStatusStream();
+    connectChatStream();
     return;
   }
 
   appInitialized = true;
   connectStatusStream();
+  connectChatStream();
   loadGroups();
+  loadChatList();
   loadKnowledge(session.allowedGroups?.[0] || "");
 
   if (session.role === "super") {

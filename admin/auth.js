@@ -70,6 +70,17 @@ export function canAccessGroup(req, groupId) {
   return Array.isArray(req.session?.allowedGroups) && req.session.allowedGroups.includes(groupId);
 }
 
+// Live Chat inbox: chat grup ikut aturan canAccessGroup (whitelist per akun
+// scoped). Chat personal (DM) belum punya konsep scoping per-admin di data
+// model — semua admin yang login (super maupun scoped) boleh akses.
+export function canAccessChat(req, jid, isGroup) {
+  if (!isGroup) {
+    return true;
+  }
+
+  return canAccessGroup(req, jid);
+}
+
 export function requireGroupAccess(getGroupId) {
   return (req, res, next) => {
     const groupId = getGroupId(req);
