@@ -2,7 +2,7 @@ import { database } from "./db.js";
 import { globalSettings, botEvents } from "./bridge.js";
 
 const COLUMNS =
-  "dm_enabled,ai_trigger_mode,ai_model,bot_name,bot_credit,ai_system_prompt,ai_api_key,ai_base_url";
+  "dm_enabled,ai_trigger_mode,ai_model,bot_name,bot_credit,ai_system_prompt,ai_api_key,ai_base_url,ai_feature_modes";
 
 function ensureDatabase() {
   if (!database) {
@@ -19,6 +19,7 @@ function applyRow(row) {
   globalSettings.aiSystemPrompt = row.ai_system_prompt || null;
   globalSettings.aiApiKey = row.ai_api_key || null;
   globalSettings.aiBaseUrl = row.ai_base_url || null;
+  globalSettings.aiFeatureModes = row.ai_feature_modes || null;
   return { ...globalSettings };
 }
 
@@ -57,6 +58,8 @@ export async function updateGlobalSettings(patch) {
       patch.aiSystemPrompt === undefined ? globalSettings.aiSystemPrompt : patch.aiSystemPrompt || null,
     aiApiKey: patch.aiApiKey === undefined ? globalSettings.aiApiKey : patch.aiApiKey || null,
     aiBaseUrl: patch.aiBaseUrl === undefined ? globalSettings.aiBaseUrl : patch.aiBaseUrl || null,
+    aiFeatureModes:
+      patch.aiFeatureModes === undefined ? globalSettings.aiFeatureModes : patch.aiFeatureModes || null,
   };
 
   const { error } = await database.from("bot_global_settings").upsert({
@@ -69,6 +72,7 @@ export async function updateGlobalSettings(patch) {
     ai_system_prompt: next.aiSystemPrompt,
     ai_api_key: next.aiApiKey,
     ai_base_url: next.aiBaseUrl,
+    ai_feature_modes: next.aiFeatureModes,
     updated_at: new Date().toISOString(),
   });
 
