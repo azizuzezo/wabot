@@ -461,6 +461,59 @@ function getMessageText(message) {
   );
 }
 
+// Dipakai admin panel Live Chat: unduh gambar/dokumen pesan masuk (kalau
+// ada) supaya bisa ditampilkan sebagai bubble media, bukan cuma teks caption.
+// Return null kalau pesan tidak punya media atau gagal diunduh (mis. media
+// sudah kedaluwarsa di server WA) — dalam kedua kasus pesan tetap direkam,
+// cuma tanpa lampiran.
+async function extractIncomingMedia(sock, msg) {
+  const content = unwrapMessage(msg.message);
+
+  if (!content) {
+    return null;
+  }
+
+  const { imageMessage, documentMessage } = content;
+
+  if (!imageMessage && !documentMessage) {
+    return null;
+  }
+
+  try {
+    let buffer;
+
+    try {
+      buffer = await downloadMediaMessage(msg, "buffer", {});
+    } catch (error) {
+      if (typeof sock.updateMediaMessage === "function") {
+        await sock.updateMediaMessage(msg).catch(() => {});
+        buffer = await downloadMediaMessage(msg, "buffer", {});
+      } else {
+        throw error;
+      }
+    }
+
+    if (imageMessage) {
+      return {
+        mediaType: "image",
+        buffer,
+        mimetype: (imageMessage.mimetype || "image/jpeg").split(";")[0].trim(),
+        filename: null,
+      };
+    }
+
+    return {
+      mediaType: "document",
+      buffer,
+      mimetype: (documentMessage.mimetype || "application/octet-stream").split(";")[0].trim(),
+      filename: documentMessage.fileName || "document",
+    };
+  } catch (error) {
+    logError("Download incoming media (Live Chat)", error);
+    return null;
+  }
+}
+
 function getContextInfo(message) {
   const content = unwrapMessage(message);
 
@@ -2980,6 +3033,7 @@ async function startWhatsApp() {
           }
 
           const dmText = getMessageText(msg.message).trim();
+          const dmMedia = await extractIncomingMedia(sock, msg);
 
           recordChatMessage({
             id: msg.key.id,
@@ -2990,6 +3044,7 @@ async function startWhatsApp() {
             pushName: msg.pushName,
             text: dmText,
             chatName: msg.pushName,
+            media: dmMedia,
           }).catch((error) => logError("Record chat message", error));
 
           if (globalSettings.dmEnabled) {
@@ -3170,6 +3225,27 @@ async function startWhatsApp() {
           continue;
         }
 
+        const groupMedia = !msg.key.fromMe ? await extractIncomingMedia(sock, msg) : null;
+
+        // Gambar/dokumen tanpa caption maupun command — cukup direkam ke
+        // Live Chat inbox saja, tidak lanjut ke logic command/AI di bawah
+        // (sama seperti perilaku sebelumnya untuk pesan tanpa teks).
+        if (!msg.key.fromMe && groupMedia && !text) {
+          recordChatMessage({
+            id: msg.key.id,
+            jid,
+            direction: "in",
+            isGroup: true,
+            senderJid: sender,
+            pushName: msg.pushName,
+            text: "",
+            chatName: metadata?.subject,
+            media: groupMedia,
+          }).catch((error) => logError("Record chat message", error));
+
+          continue;
+        }
+
         if (!text) {
           continue;
         }
@@ -3188,6 +3264,7 @@ async function startWhatsApp() {
             pushName: msg.pushName,
             text,
             chatName: metadata?.subject,
+            media: groupMedia,
           }).catch((error) => logError("Record chat message", error));
 
           if (!text.startsWith("!")) {

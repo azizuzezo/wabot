@@ -42,7 +42,16 @@ import {
   setAdminUserLiveChatAccess,
   deleteAdminUser,
 } from "./adminUsers.js";
-import { listChats, getMessages, setTakeover, sendChatMessage } from "./conversations.js";
+import {
+  listChats,
+  getMessages,
+  setTakeover,
+  sendChatMessage,
+  sendChatMedia,
+  ensureAvatarUrl,
+  refreshMissingAvatars,
+} from "./conversations.js";
+import { mediaFilePath } from "./mediaStore.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
@@ -53,6 +62,11 @@ const SESSION_SECRET = process.env.SESSION_SECRET || randomBytes(32).toString("h
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 8 * 1024 * 1024 },
+});
+
+const uploadChatMedia = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
 });
 
 async function extractTextFromUpload(file) {
@@ -479,7 +493,9 @@ export function startAdminServer({ botName } = {}) {
       }
 
       const allowedGroups = req.session.role === "super" ? null : req.session.allowedGroups || [];
-      res.json({ success: true, chats: await listChats({ allowedGroups }) });
+      const chats = await listChats({ allowedGroups });
+      refreshMissingAvatars(chats);
+      res.json({ success: true, chats });
     })
   );
 
@@ -493,9 +509,60 @@ export function startAdminServer({ botName } = {}) {
         return res.status(403).json({ success: false, error: "Tidak punya akses ke chat ini" });
       }
 
-      res.json({ success: true, messages: await getMessages(jid) });
+      const [messages, avatarUrl] = await Promise.all([
+        getMessages(jid),
+        ensureAvatarUrl(jid, { isGroup }),
+      ]);
+
+      res.json({ success: true, messages, avatarUrl });
     })
   );
+
+  app.post(
+    "/api/chats/:jid/media",
+    uploadChatMedia.single("file"),
+    asyncRoute(async (req, res) => {
+      const jid = req.params.jid;
+      const isGroup = jid.endsWith("@g.us");
+
+      if (!canAccessChat(req, jid, isGroup)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke chat ini" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: "File wajib diunggah" });
+      }
+
+      const caption = String(req.body?.caption || "").trim();
+
+      await sendChatMedia({
+        jid,
+        isGroup,
+        buffer: req.file.buffer,
+        mimetype: req.file.mimetype,
+        filename: req.file.originalname,
+        caption,
+        fromAdmin: req.session.username,
+      });
+
+      res.json({ success: true });
+    })
+  );
+
+  app.get("/api/media/:jid/:filename", (req, res) => {
+    const jid = req.params.jid;
+    const isGroup = jid.endsWith("@g.us");
+
+    if (!canAccessChat(req, jid, isGroup)) {
+      return res.status(403).end();
+    }
+
+    res.sendFile(mediaFilePath(jid, req.params.filename), (error) => {
+      if (error && !res.headersSent) {
+        res.status(404).end();
+      }
+    });
+  });
 
   app.post(
     "/api/chats/:jid/messages",
@@ -574,8 +641,15 @@ export function startAdminServer({ botName } = {}) {
       }
     };
 
+    const onAvatar = (payload) => {
+      if (canAccessChat(req, payload.jid, payload.jid.endsWith("@g.us"))) {
+        sendEvent("avatar", payload);
+      }
+    };
+
     botEvents.on("chat-message", onMessage);
     botEvents.on("chat-takeover", onTakeover);
+    botEvents.on("chat-avatar", onAvatar);
 
     const keepAlive = setInterval(() => res.write(":\n\n"), 25_000);
 
@@ -583,6 +657,7 @@ export function startAdminServer({ botName } = {}) {
       clearInterval(keepAlive);
       botEvents.off("chat-message", onMessage);
       botEvents.off("chat-takeover", onTakeover);
+      botEvents.off("chat-avatar", onAvatar);
     });
   });
 

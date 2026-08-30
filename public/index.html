@@ -131,14 +131,36 @@
             <span class="muted">Pilih percakapan di sebelah kiri</span>
           </div>
           <div id="inbox-thread-messages" class="inbox-thread-messages"></div>
-          <div class="inbox-thread-composer hidden" id="inbox-composer">
-            <textarea id="inbox-compose-text" rows="2" placeholder="Ketik pesan..."></textarea>
-            <button id="inbox-send-btn" class="send-btn" type="button" aria-label="Kirim pesan">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+          <div class="inbox-composer-wrap hidden" id="inbox-composer">
+            <div id="inbox-attach-preview" class="inbox-attach-preview hidden">
+              <img id="inbox-attach-preview-img" class="inbox-attach-preview-img hidden" alt="" />
+              <svg id="inbox-attach-preview-icon" class="inbox-attach-preview-icon hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
               </svg>
-            </button>
+              <span id="inbox-attach-preview-name" class="inbox-attach-preview-name"></span>
+              <button id="inbox-attach-remove-btn" class="icon-btn" type="button" aria-label="Batal lampiran">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div class="inbox-thread-composer">
+              <input type="file" id="inbox-attach-input" hidden />
+              <button id="inbox-attach-btn" class="icon-btn" type="button" aria-label="Lampirkan gambar atau dokumen">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                </svg>
+              </button>
+              <textarea id="inbox-compose-text" rows="2" placeholder="Ketik pesan..."></textarea>
+              <button id="inbox-send-btn" class="send-btn" type="button" aria-label="Kirim pesan">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>

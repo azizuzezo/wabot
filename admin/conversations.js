@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { database } from "./db.js";
 import { botState, botEvents, setChatTakeover } from "./bridge.js";
+import { saveMedia } from "./mediaStore.js";
 
 const MESSAGE_HISTORY_LIMIT = 200;
 const CHAT_LIST_LIMIT = 200;
 const PREVIEW_LENGTH = 120;
+const AVATAR_TTL_MS = 24 * 60 * 60 * 1000;
 
 function ensureDatabase() {
   if (!database) {
@@ -12,8 +14,19 @@ function ensureDatabase() {
   }
 }
 
+function buildMediaUrl(jid, filename) {
+  if (!filename) return null;
+  return `/api/media/${encodeURIComponent(jid)}/${filename}`;
+}
+
+function mediaPreviewText(mediaType, mediaFilename) {
+  if (mediaType === "image") return "📷 Foto";
+  if (mediaType === "document") return `📄 ${mediaFilename || "Dokumen"}`;
+  return "";
+}
+
 const CHAT_SELECT =
-  "jid,is_group,name,taken_over,taken_over_by,taken_over_at,last_message_at,last_message_preview";
+  "jid,is_group,name,taken_over,taken_over_by,taken_over_at,last_message_at,last_message_preview,avatar_url";
 
 function mapChatRow(row) {
   return {
@@ -25,6 +38,7 @@ function mapChatRow(row) {
     takenOverAt: row.taken_over_at,
     lastMessageAt: row.last_message_at,
     lastMessagePreview: row.last_message_preview,
+    avatarUrl: row.avatar_url || null,
   };
 }
 
@@ -39,6 +53,10 @@ function mapMessageRow(row) {
     fromBot: Boolean(row.from_bot),
     fromAdmin: row.from_admin,
     createdAt: row.created_at,
+    mediaType: row.media_type || null,
+    mediaUrl: buildMediaUrl(row.jid, row.media_path),
+    mediaFilename: row.media_filename || null,
+    mediaMimetype: row.media_mimetype || null,
   };
 }
 
@@ -67,6 +85,8 @@ async function touchChatState({ jid, isGroup, name, preview, at }) {
 // message WhatsApp asli (msg.key.id) supaya idempotent — kalau baileys
 // re-deliver event yang sama, insert kedua akan gagal karena PK bentrok dan
 // diabaikan diam-diam, bukan dobel tercatat.
+// media (opsional): { mediaType: 'image'|'document', buffer, mimetype, filename }
+// — file asli disimpan ke disk di sini (saveMedia), DB cuma nyimpan nama filenya.
 export async function recordMessage({
   id,
   jid,
@@ -78,11 +98,24 @@ export async function recordMessage({
   fromBot,
   fromAdmin,
   chatName,
+  media,
 }) {
   ensureDatabase();
 
   const messageId = id || randomUUID();
   const now = new Date().toISOString();
+
+  let mediaType = null;
+  let mediaPath = null;
+  let mediaFilename = null;
+  let mediaMimetype = null;
+
+  if (media?.buffer) {
+    mediaType = media.mediaType;
+    mediaMimetype = media.mimetype || null;
+    mediaFilename = media.filename || null;
+    mediaPath = saveMedia(jid, media.buffer, media.mimetype);
+  }
 
   const { error } = await database.from("bot_chat_messages").insert({
     id: messageId,
@@ -94,13 +127,17 @@ export async function recordMessage({
     from_bot: Boolean(fromBot),
     from_admin: fromAdmin || null,
     created_at: now,
+    media_type: mediaType,
+    media_path: mediaPath,
+    media_filename: mediaFilename,
+    media_mimetype: mediaMimetype,
   });
 
   if (error && error.code !== "23505") {
     throw error;
   }
 
-  const preview = String(text || "").slice(0, PREVIEW_LENGTH);
+  const preview = String(text || "").slice(0, PREVIEW_LENGTH) || mediaPreviewText(mediaType, mediaFilename);
   await touchChatState({ jid, isGroup, name: chatName, preview, at: now });
 
   botEvents.emit("chat-message", {
@@ -114,6 +151,11 @@ export async function recordMessage({
     fromBot: Boolean(fromBot),
     fromAdmin: fromAdmin || null,
     createdAt: now,
+    preview,
+    mediaType,
+    mediaUrl: buildMediaUrl(jid, mediaPath),
+    mediaFilename,
+    mediaMimetype,
   });
 }
 
@@ -166,7 +208,9 @@ export async function getMessages(jid, { limit = MESSAGE_HISTORY_LIMIT } = {}) {
 
   const { data, error } = await database
     .from("bot_chat_messages")
-    .select("id,jid,direction,sender_jid,push_name,text,from_bot,from_admin,created_at")
+    .select(
+      "id,jid,direction,sender_jid,push_name,text,from_bot,from_admin,created_at,media_type,media_path,media_filename,media_mimetype"
+    )
     .eq("jid", jid)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -250,4 +294,97 @@ export async function sendChatMessage({ jid, isGroup, text, fromAdmin, chatName 
   });
 
   await setTakeover(jid, { takenOver: true, byAdmin: fromAdmin, isGroup, name: chatName });
+}
+
+// Sama seperti sendChatMessage tapi dengan lampiran gambar/dokumen. Tipe
+// ditentukan dari mimetype upload-nya: image/* -> pesan gambar (caption
+// opsional), selain itu -> pesan dokumen (perlu fileName).
+export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, caption, fromAdmin, chatName }) {
+  ensureDatabase();
+
+  if (!botState.sock) {
+    throw new Error("WhatsApp belum terhubung");
+  }
+
+  const isImage = String(mimetype || "").startsWith("image/");
+  const mediaType = isImage ? "image" : "document";
+
+  const payload = isImage
+    ? { image: buffer, mimetype, caption: caption || undefined }
+    : { document: buffer, mimetype, fileName: filename || "document", caption: caption || undefined };
+
+  const sent = await botState.sock.sendMessage(jid, payload);
+
+  await recordMessage({
+    id: sent?.key?.id,
+    jid,
+    direction: "out",
+    isGroup,
+    text: caption || null,
+    fromAdmin,
+    chatName,
+    media: { mediaType, buffer, mimetype, filename },
+  });
+
+  await setTakeover(jid, { takenOver: true, byAdmin: fromAdmin, isGroup, name: chatName });
+}
+
+// Ambil (dan cache 24 jam di bot_chat_state) URL foto profil WhatsApp untuk
+// sebuah jid — dipakai admin panel biar avatar di Live Chat mirip WA asli.
+// URL dari Baileys sudah berupa link CDN publik (pps.whatsapp.net), jadi
+// cukup dipakai langsung sebagai <img src>, tidak perlu di-proxy.
+export async function ensureAvatarUrl(jid, { isGroup = false, force = false } = {}) {
+  ensureDatabase();
+
+  const { data, error: selectError } = await database
+    .from("bot_chat_state")
+    .select("avatar_url,avatar_fetched_at")
+    .eq("jid", jid)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+
+  const fetchedAt = data?.avatar_fetched_at ? new Date(data.avatar_fetched_at).getTime() : 0;
+  const isFresh = !force && Date.now() - fetchedAt < AVATAR_TTL_MS;
+
+  if (isFresh) {
+    return data.avatar_url;
+  }
+
+  if (!botState.sock) {
+    return data?.avatar_url || null;
+  }
+
+  let avatarUrl = null;
+
+  try {
+    avatarUrl = await botState.sock.profilePictureUrl(jid, "image");
+  } catch {
+    avatarUrl = null;
+  }
+
+  const { error } = await database.from("bot_chat_state").upsert({
+    jid,
+    is_group: Boolean(isGroup),
+    avatar_url: avatarUrl,
+    avatar_fetched_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
+  if (error) throw error;
+
+  botEvents.emit("chat-avatar", { jid, avatarUrl });
+
+  return avatarUrl;
+}
+
+// Best-effort, non-blocking: dipanggil setelah listChats() supaya chat yang
+// belum punya avatar_url ter-cache langsung diisi di background, lalu
+// dikirim ke client via SSE ("chat-avatar") begitu selesai.
+export function refreshMissingAvatars(chats) {
+  for (const chat of chats) {
+    if (!chat.avatarUrl) {
+      ensureAvatarUrl(chat.jid, { isGroup: chat.isGroup }).catch(() => {});
+    }
+  }
 }

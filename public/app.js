@@ -648,8 +648,21 @@ function initials(name) {
   return parts.length === 1 ? parts[0].slice(0, 2).toUpperCase() : (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-function avatarHtml(name, seed) {
-  return `<span class="avatar" style="background:${avatarColor(seed || name)}">${escapeHtml(initials(name))}</span>`;
+// avatarUrl datang dari sock.profilePictureUrl() (link CDN pps.whatsapp.net
+// milik WhatsApp) — kalau ada, ditumpuk di atas avatar inisial; kalau gagal
+// dimuat (404/expired) atau memang belum ada foto profil, onerror
+// menyembunyikan <img>-nya supaya inisial tetap kelihatan sebagai fallback.
+function avatarHtml(name, seed, avatarUrl) {
+  const initialsSpan = `<span class="avatar" style="background:${avatarColor(seed || name)}">${escapeHtml(initials(name))}</span>`;
+
+  if (!avatarUrl) {
+    return initialsSpan;
+  }
+
+  return `<span class="avatar-wrap">
+    ${initialsSpan}
+    <img class="avatar avatar-photo" src="${escapeHtml(avatarUrl)}" alt="" onerror="this.remove()" />
+  </span>`;
 }
 
 function statusPillHtml(takenOver, takenOverBy) {
@@ -675,7 +688,7 @@ function renderChatList() {
     row.className = `chat-row${chat.jid === activeChatJid ? " active" : ""}`;
     const name = chat.name || chat.jid;
     row.innerHTML = `
-      ${avatarHtml(name, chat.jid)}
+      ${avatarHtml(name, chat.jid, chat.avatarUrl)}
       <div class="chat-row-body">
         <div class="chat-row-top">
           <span class="chat-row-name">${escapeHtml(name)}</span>
@@ -710,7 +723,7 @@ function renderThreadHeader(chat) {
 
   header.innerHTML = `
     <div class="thread-who">
-      ${avatarHtml(name, chat.jid)}
+      ${avatarHtml(name, chat.jid, chat.avatarUrl)}
       <div class="thread-title">
         <strong>${escapeHtml(name)}</strong>
         <span>${escapeHtml(chat.jid)}</span>
@@ -736,18 +749,74 @@ function renderThreadHeader(chat) {
   });
 }
 
+let lastBubbleDateKey = null;
+
+function formatDateLabel(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const sameDay = (a, b) => a.toDateString() === b.toDateString();
+
+  if (sameDay(d, today)) return "Hari ini";
+  if (sameDay(d, yesterday)) return "Kemarin";
+
+  return d.toLocaleDateString("id-ID", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function maybeInsertDateDivider(iso) {
+  if (!iso) return;
+
+  const key = new Date(iso).toDateString();
+  if (key === lastBubbleDateKey) return;
+
+  lastBubbleDateKey = key;
+
+  const divider = document.createElement("div");
+  divider.className = "date-divider";
+  divider.innerHTML = `<span>${escapeHtml(formatDateLabel(iso))}</span>`;
+  $("#inbox-thread-messages").appendChild(divider);
+}
+
+function mediaBubbleHtml(msg) {
+  if (!msg.mediaUrl) return "";
+
+  const url = escapeHtml(msg.mediaUrl);
+
+  if (msg.mediaType === "image") {
+    return `<a href="${url}" target="_blank" rel="noopener"><img class="bubble-image" src="${url}" alt="" /></a>`;
+  }
+
+  if (msg.mediaType === "document") {
+    return `
+      <a class="bubble-document" href="${url}" target="_blank" rel="noopener" download>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+        <span>${escapeHtml(msg.mediaFilename || "Dokumen")}</span>
+      </a>`;
+  }
+
+  return "";
+}
+
 function appendBubble(msg) {
   const container = $("#inbox-thread-messages");
   const empty = container.querySelector(".muted");
   if (empty) empty.remove();
 
+  maybeInsertDateDivider(msg.createdAt);
+
   const isOut = msg.direction === "out";
+  const hasMedia = Boolean(msg.mediaUrl);
   const bubble = document.createElement("div");
-  bubble.className = `bubble ${isOut ? "bubble-out" : "bubble-in"}${isOut && msg.fromBot ? " bubble-bot" : ""}`;
+  bubble.className = `bubble ${isOut ? "bubble-out" : "bubble-in"}${isOut && msg.fromBot ? " bubble-bot" : ""}${hasMedia ? " bubble-media" : ""}`;
 
   const label = isOut ? (msg.fromBot ? "Bot" : msg.fromAdmin || "Admin") : msg.pushName || msg.senderJid || "";
+  const textHtml = msg.text ? `<div class="bubble-text">${escapeHtml(msg.text)}</div>` : "";
 
-  bubble.innerHTML = `${escapeHtml(msg.text || "")}<span class="bubble-meta"><span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span></span>`;
+  bubble.innerHTML = `${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta"><span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span></span>`;
 
   container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
@@ -755,17 +824,27 @@ function appendBubble(msg) {
 
 async function openChat(jid) {
   activeChatJid = jid;
+  lastBubbleDateKey = null;
   renderChatList();
 
   const chat = chats.find((c) => c.jid === jid) || { jid };
   renderThreadHeader(chat);
   $("#inbox-composer").classList.remove("hidden");
+  clearPendingAttachment();
 
   const messagesEl = $("#inbox-thread-messages");
   messagesEl.innerHTML = '<p class="muted">Memuat...</p>';
 
   try {
-    const { messages } = await api(`/api/chats/${encodeURIComponent(jid)}/messages`);
+    const { messages, avatarUrl } = await api(`/api/chats/${encodeURIComponent(jid)}/messages`);
+
+    if (avatarUrl && chat.avatarUrl !== avatarUrl) {
+      chat.avatarUrl = avatarUrl;
+      if (!chats.includes(chat)) chats.push(chat);
+      renderThreadHeader(chat);
+      renderChatList();
+    }
+
     messagesEl.innerHTML = "";
 
     if (!messages.length) {
@@ -780,11 +859,88 @@ async function openChat(jid) {
   }
 }
 
+// ---- Live Chat: lampiran gambar/dokumen ----
+
+let pendingAttachment = null;
+
+function clearPendingAttachment() {
+  pendingAttachment = null;
+  $("#inbox-attach-preview").classList.add("hidden");
+  const img = $("#inbox-attach-preview-img");
+  img.classList.add("hidden");
+  img.src = "";
+  $("#inbox-attach-preview-icon").classList.add("hidden");
+  $("#inbox-attach-preview-name").textContent = "";
+  $("#inbox-attach-input").value = "";
+}
+
+function renderPendingAttachment() {
+  if (!pendingAttachment) {
+    clearPendingAttachment();
+    return;
+  }
+
+  $("#inbox-attach-preview").classList.remove("hidden");
+  $("#inbox-attach-preview-name").textContent =
+    `${pendingAttachment.name} (${Math.ceil(pendingAttachment.size / 1024)} KB)`;
+
+  const img = $("#inbox-attach-preview-img");
+  const icon = $("#inbox-attach-preview-icon");
+
+  if (pendingAttachment.type.startsWith("image/")) {
+    img.src = URL.createObjectURL(pendingAttachment);
+    img.classList.remove("hidden");
+    icon.classList.add("hidden");
+  } else {
+    img.classList.add("hidden");
+    img.src = "";
+    icon.classList.remove("hidden");
+  }
+}
+
+$("#inbox-attach-btn").addEventListener("click", () => {
+  $("#inbox-attach-input").click();
+});
+
+$("#inbox-attach-input").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  pendingAttachment = file;
+  renderPendingAttachment();
+});
+
+$("#inbox-attach-remove-btn").addEventListener("click", () => {
+  clearPendingAttachment();
+});
+
 $("#inbox-send-btn").addEventListener("click", async () => {
   if (!activeChatJid) return;
 
   const textarea = $("#inbox-compose-text");
   const text = textarea.value.trim();
+
+  if (pendingAttachment) {
+    const file = pendingAttachment;
+    const caption = text;
+    textarea.value = "";
+    clearPendingAttachment();
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      if (caption) formData.append("caption", caption);
+
+      await api(`/api/chats/${encodeURIComponent(activeChatJid)}/media`, {
+        method: "POST",
+        body: formData,
+      });
+    } catch (error) {
+      alert(error.message);
+    }
+
+    return;
+  }
+
   if (!text) return;
 
   textarea.value = "";
@@ -827,10 +983,11 @@ function connectChatStream() {
     }
 
     if (payload.type === "message") {
+      const preview = payload.preview ?? String(payload.text || "").slice(0, 120);
       const existing = chats.find((c) => c.jid === payload.jid);
 
       if (existing) {
-        existing.lastMessagePreview = String(payload.text || "").slice(0, 120);
+        existing.lastMessagePreview = preview;
         existing.lastMessageAt = payload.createdAt;
       } else {
         chats.unshift({
@@ -839,8 +996,9 @@ function connectChatStream() {
           name: payload.pushName || payload.jid,
           takenOver: false,
           takenOverBy: null,
+          avatarUrl: null,
           lastMessageAt: payload.createdAt,
-          lastMessagePreview: String(payload.text || "").slice(0, 120),
+          lastMessagePreview: preview,
         });
       }
 
@@ -849,6 +1007,17 @@ function connectChatStream() {
 
       if (payload.jid === activeChatJid) {
         appendBubble(payload);
+      }
+    } else if (payload.type === "avatar") {
+      const existing = chats.find((c) => c.jid === payload.jid);
+
+      if (existing) {
+        existing.avatarUrl = payload.avatarUrl;
+        renderChatList();
+
+        if (payload.jid === activeChatJid) {
+          renderThreadHeader(existing);
+        }
       }
     } else if (payload.type === "takeover") {
       const existing = chats.find((c) => c.jid === payload.jid);
