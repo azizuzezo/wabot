@@ -491,13 +491,17 @@ main { padding: 20px; max-width: 1000px; margin: 0 auto; }
 
 .bubble .bubble-meta {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 4px;
   margin-top: 2px;
   padding: 0 2px;
   font-size: 0.68rem;
   color: var(--wa-muted);
 }
+
+.bubble-ticks { flex-shrink: 0; color: var(--wa-muted); }
+.bubble-ticks.ticks-read { color: var(--wa-ticks); }
 
 .bubble.bubble-in {
   align-self: flex-start;

@@ -57,6 +57,7 @@ function mapMessageRow(row) {
     mediaUrl: buildMediaUrl(row.jid, row.media_path),
     mediaFilename: row.media_filename || null,
     mediaMimetype: row.media_mimetype || null,
+    status: row.status || null,
   };
 }
 
@@ -209,7 +210,7 @@ export async function getMessages(jid, { limit = MESSAGE_HISTORY_LIMIT } = {}) {
   const { data, error } = await database
     .from("bot_chat_messages")
     .select(
-      "id,jid,direction,sender_jid,push_name,text,from_bot,from_admin,created_at,media_type,media_path,media_filename,media_mimetype"
+      "id,jid,direction,sender_jid,push_name,text,from_bot,from_admin,created_at,media_type,media_path,media_filename,media_mimetype,status"
     )
     .eq("jid", jid)
     .order("created_at", { ascending: false })
@@ -376,6 +377,23 @@ export async function ensureAvatarUrl(jid, { isGroup = false, force = false } = 
   botEvents.emit("chat-avatar", { jid, avatarUrl });
 
   return avatarUrl;
+}
+
+// Dipanggil dari index.js saat event messages.update Baileys (ack pesan
+// keluar: server_ack/delivery_ack/read) — dipetakan ke 'sent'/'delivered'/
+// 'read' di index.js lalu disimpan di sini supaya Live Chat bisa nampilin
+// centang WA (single/double abu-abu/double biru).
+export async function updateMessageStatus(jid, id, status) {
+  ensureDatabase();
+
+  const { error } = await database
+    .from("bot_chat_messages")
+    .update({ status })
+    .eq("id", id);
+
+  if (error) throw error;
+
+  botEvents.emit("chat-status", { jid, id, status });
 }
 
 // Best-effort, non-blocking: dipanggil setelah listChats() supaya chat yang

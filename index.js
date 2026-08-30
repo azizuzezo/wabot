@@ -12,6 +12,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   areJidsSameUser,
   downloadMediaMessage,
+  WAMessageStatus,
 } from "@whiskeysockets/baileys";
 
 import { Boom } from "@hapi/boom";
@@ -35,7 +36,11 @@ import {
 import { startAdminServer } from "./admin/server.js";
 import { buildKnowledgeContext } from "./admin/knowledge.js";
 import { loadGlobalSettings } from "./admin/globalSettings.js";
-import { recordMessage as recordChatMessage, loadChatTakeoverState } from "./admin/conversations.js";
+import {
+  recordMessage as recordChatMessage,
+  loadChatTakeoverState,
+  updateMessageStatus,
+} from "./admin/conversations.js";
 
 // =====================================================
 // MUTER ASSISTANT CONFIG
@@ -511,6 +516,25 @@ async function extractIncomingMedia(sock, msg) {
   } catch (error) {
     logError("Download incoming media (Live Chat)", error);
     return null;
+  }
+}
+
+// Centang WA di Live Chat: server_ack (✓) -> "sent", delivery_ack (✓✓ abu)
+// -> "delivered", read/played (✓✓ biru) -> "read". PENDING/ERROR sengaja
+// tidak disimpan — bubble yang belum dapat ack tetap tampil sebagai "sent"
+// di admin panel, cukup buat kebutuhan Live Chat (bukan pengganti status WA
+// asli yang lebih granular).
+function mapWaMessageStatus(numericStatus) {
+  switch (numericStatus) {
+    case WAMessageStatus.SERVER_ACK:
+      return "sent";
+    case WAMessageStatus.DELIVERY_ACK:
+      return "delivered";
+    case WAMessageStatus.READ:
+    case WAMessageStatus.PLAYED:
+      return "read";
+    default:
+      return null;
   }
 }
 
@@ -2721,7 +2745,7 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
       model: settings.aiModel,
     });
 
-    await sock.sendMessage(
+    const sent = await sock.sendMessage(
       jid,
       {
         text: `🤖 *${BOT_NAME}*\n\n${answer}${FOOTER}`,
@@ -2732,6 +2756,7 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
     );
 
     recordChatMessage({
+      id: sent?.key?.id,
       jid,
       direction: "out",
       isGroup: jid.endsWith("@g.us"),
@@ -2943,6 +2968,28 @@ async function startWhatsApp() {
   });
 
   sock.ev.on("creds.update", saveCreds);
+
+  // ===================================================
+  // LIVE CHAT — status centang WA (sent/delivered/read)
+  // ===================================================
+
+  sock.ev.on("messages.update", (updates) => {
+    for (const { key, update } of updates) {
+      if (!key.fromMe || !key.id || update.status === undefined || update.status === null) {
+        continue;
+      }
+
+      const status = mapWaMessageStatus(update.status);
+
+      if (!status) {
+        continue;
+      }
+
+      updateMessageStatus(key.remoteJid, key.id, status).catch((error) =>
+        logError("Update message status (Live Chat)", error)
+      );
+    }
+  });
 
   // ===================================================
   // GROUP CACHE

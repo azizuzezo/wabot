@@ -647,9 +647,16 @@ export function startAdminServer({ botName } = {}) {
       }
     };
 
+    const onStatus = (payload) => {
+      if (canAccessChat(req, payload.jid, payload.jid.endsWith("@g.us"))) {
+        sendEvent("status", payload);
+      }
+    };
+
     botEvents.on("chat-message", onMessage);
     botEvents.on("chat-takeover", onTakeover);
     botEvents.on("chat-avatar", onAvatar);
+    botEvents.on("chat-status", onStatus);
 
     const keepAlive = setInterval(() => res.write(":\n\n"), 25_000);
 
@@ -658,6 +665,7 @@ export function startAdminServer({ botName } = {}) {
       botEvents.off("chat-message", onMessage);
       botEvents.off("chat-takeover", onTakeover);
       botEvents.off("chat-avatar", onAvatar);
+      botEvents.off("chat-status", onStatus);
     });
   });
 

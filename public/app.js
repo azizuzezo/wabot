@@ -801,6 +801,33 @@ function mediaBubbleHtml(msg) {
   return "";
 }
 
+// Centang WA — cuma dipasang di bubble keluar (kita yang kirim). "pending"
+// dapat jam kecil, "sent"/tanpa status dapat satu centang, "delivered" dua
+// centang abu-abu, "read" dua centang biru (ticks-read).
+function ticksSvg(status) {
+  if (status === "pending") {
+    return `<svg class="bubble-ticks" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="5" /><path d="M6 3.2v3l2 1.3" /></svg>`;
+  }
+
+  if (status === "delivered" || status === "read") {
+    const readClass = status === "read" ? " ticks-read" : "";
+    return `<svg class="bubble-ticks${readClass}" viewBox="0 0 16 11" width="16" height="11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1,6 4.5,9.5 10,2" /><polyline points="6,6 9.5,9.5 15,2" /></svg>`;
+  }
+
+  return `<svg class="bubble-ticks" viewBox="0 0 12 11" width="12" height="11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1,6 4.5,9.5 11,2" /></svg>`;
+}
+
+function updateBubbleTicks(id, status) {
+  if (!id) return;
+
+  const bubble = document.querySelector(`.bubble[data-msg-id="${CSS.escape(String(id))}"]`);
+  const meta = bubble?.querySelector(".bubble-meta");
+  if (!meta) return;
+
+  meta.querySelector(".bubble-ticks")?.remove();
+  meta.insertAdjacentHTML("beforeend", ticksSvg(status));
+}
+
 function appendBubble(msg) {
   const container = $("#inbox-thread-messages");
   const empty = container.querySelector(".muted");
@@ -812,11 +839,13 @@ function appendBubble(msg) {
   const hasMedia = Boolean(msg.mediaUrl);
   const bubble = document.createElement("div");
   bubble.className = `bubble ${isOut ? "bubble-out" : "bubble-in"}${isOut && msg.fromBot ? " bubble-bot" : ""}${hasMedia ? " bubble-media" : ""}`;
+  if (msg.id) bubble.dataset.msgId = msg.id;
 
   const label = isOut ? (msg.fromBot ? "Bot" : msg.fromAdmin || "Admin") : msg.pushName || msg.senderJid || "";
   const textHtml = msg.text ? `<div class="bubble-text">${escapeHtml(msg.text)}</div>` : "";
+  const ticks = isOut ? ticksSvg(msg.status) : "";
 
-  bubble.innerHTML = `${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta"><span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span></span>`;
+  bubble.innerHTML = `${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta"><span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span>${ticks}</span>`;
 
   container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
@@ -1018,6 +1047,10 @@ function connectChatStream() {
         if (payload.jid === activeChatJid) {
           renderThreadHeader(existing);
         }
+      }
+    } else if (payload.type === "status") {
+      if (payload.jid === activeChatJid) {
+        updateBubbleTicks(payload.id, payload.status);
       }
     } else if (payload.type === "takeover") {
       const existing = chats.find((c) => c.jid === payload.jid);
