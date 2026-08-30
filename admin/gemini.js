@@ -70,34 +70,40 @@ const CHAT_API_KEY = (
   ""
 ).trim();
 
-export async function testChatModel(model) {
+export async function testChatModel(model, { baseUrl, apiKey } = {}) {
   if (!model) {
     return { ok: true };
   }
 
-  if (!CHAT_API_KEY) {
+  const effectiveBaseUrl = (baseUrl || CHAT_BASE_URL).replace(/\/+$/, "");
+  const effectiveApiKey = apiKey || CHAT_API_KEY;
+
+  if (!effectiveApiKey) {
     return { ok: true };
   }
 
   try {
-    const url = `${CHAT_BASE_URL}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(
-      CHAT_API_KEY
-    )}`;
+    const url = `${effectiveBaseUrl}/chat/completions`;
 
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${effectiveApiKey}`,
+      },
       body: JSON.stringify({
-        contents: [{ role: "user", parts: [{ text: "Hi" }] }],
-        generationConfig: { maxOutputTokens: 1 },
+        model,
+        messages: [{ role: "user", content: "Hi" }],
+        max_tokens: 1,
       }),
     });
 
-    if (response.ok) {
+    const data = await response.json().catch(() => null);
+
+    if (response.ok && !data?.error) {
       return { ok: true };
     }
 
-    const data = await response.json().catch(() => null);
     return { ok: false, error: data?.error?.message || `HTTP ${response.status}` };
   } catch (error) {
     return { ok: false, error: error.message };

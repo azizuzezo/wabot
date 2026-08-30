@@ -7,7 +7,7 @@ import session from "express-session";
 import multer from "multer";
 import QRCode from "qrcode";
 
-import { botState, botEvents, getStatusSnapshot } from "./bridge.js";
+import { botState, botEvents, getStatusSnapshot, globalSettings } from "./bridge.js";
 import {
   adminAuthConfigured,
   verifyCredentials,
@@ -271,7 +271,10 @@ export function startAdminServer({ botName } = {}) {
       const patch = req.body || {};
 
       if (patch.aiModel) {
-        const test = await testChatModel(patch.aiModel);
+        const test = await testChatModel(patch.aiModel, {
+          baseUrl: globalSettings.aiBaseUrl,
+          apiKey: globalSettings.aiApiKey,
+        });
 
         if (!test.ok) {
           return res.status(400).json({ success: false, error: `Model tidak valid: ${test.error}` });
@@ -310,7 +313,10 @@ export function startAdminServer({ botName } = {}) {
       const patch = req.body || {};
 
       if (patch.aiModel) {
-        const test = await testChatModel(patch.aiModel);
+        const test = await testChatModel(patch.aiModel, {
+          baseUrl: patch.aiBaseUrl === undefined ? globalSettings.aiBaseUrl : patch.aiBaseUrl,
+          apiKey: patch.aiApiKey === undefined ? globalSettings.aiApiKey : patch.aiApiKey,
+        });
 
         if (!test.ok) {
           return res.status(400).json({ success: false, error: `Model tidak valid: ${test.error}` });

@@ -1726,10 +1726,16 @@ Aturan Umum:
 ${customPrompt}`;
 }
 
-function extractGeminiText(data) {
-  const parts = data?.candidates?.[0]?.content?.parts || [];
+function extractAiText(data) {
+  return (data?.choices?.[0]?.message?.content || "").trim();
+}
 
-  return parts.map((part) => part.text || "").join("\n").trim();
+function aiPartsToText(parts) {
+  return (parts || [])
+    .map((part) => part.text || "")
+    .filter(Boolean)
+    .join(" ")
+    .trim();
 }
 
 async function callGeminiGenerate({
@@ -1766,43 +1772,39 @@ async function callGeminiGenerate({
     });
   }
 
-  const contents = [
-    ...history,
-    {
-      role: "user",
-      parts: userParts,
-    },
-  ];
-
   const effectiveModel = model || globalSettings.aiModel || AI_MODEL;
   const apiKey = getAiApiKey();
 
-  const url = `${getAiBaseUrl()}/models/${encodeURIComponent(
-    effectiveModel
-  )}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const url = `${getAiBaseUrl()}/chat/completions`;
 
   const knowledgeContext = await buildKnowledgeContext(groupId, prompt).catch(() => "");
+
+  const messages = [
+    {
+      role: "system",
+      content: `${geminiSystemInstruction(userName)}${knowledgeContext}`,
+    },
+    ...history.map((entry) => ({
+      role: entry.role === "model" ? "assistant" : "user",
+      content: aiPartsToText(entry.parts),
+    })),
+    {
+      role: "user",
+      content: aiPartsToText(userParts),
+    },
+  ];
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-goog-api-key": apiKey,
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      systemInstruction: {
-        parts: [
-          {
-            text: `${geminiSystemInstruction(userName)}${knowledgeContext}`,
-          },
-        ],
-      },
-      contents,
-      generationConfig: {
-        temperature: 0.7,
-        topP: 0.9,
-        maxOutputTokens: 1200,
-      },
+      model: effectiveModel,
+      messages,
+      temperature: 0.7,
+      max_tokens: 1200,
     }),
   });
 
@@ -1816,11 +1818,11 @@ async function callGeminiGenerate({
     throw new Error(`Gemini invalid response: ${raw}`);
   }
 
-  if (!response.ok) {
+  if (!response.ok || data?.error) {
     throw new Error(`Gemini API error ${response.status}: ${JSON.stringify(data)}`);
   }
 
-  let answer = extractGeminiText(data) || "Maaf, AI belum memberikan jawaban. 😅";
+  let answer = extractAiText(data) || "Maaf, AI belum memberikan jawaban. 😅";
 
   if (answer.length > MAX_RESPONSE_LENGTH) {
     answer = `${answer.slice(
