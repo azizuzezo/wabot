@@ -3499,13 +3499,13 @@ async function startWhatsApp() {
         const isPersonalChat = jid && (jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid"));
 
         if (isPersonalChat) {
-          if (msg.key.fromMe) {
-            continue;
-          }
-
           const dmText = getMessageText(msg.message).trim();
 
           if (await tryHandlePendingSendConfirmation(sock, jid, jid, dmText)) {
+            continue;
+          }
+
+          if (msg.key.fromMe) {
             continue;
           }
 
@@ -3549,14 +3549,16 @@ async function startWhatsApp() {
 
         const text = getMessageText(msg.message).trim();
         const command = text.toLowerCase();
+        const sender = getSenderJid(sock, msg);
 
-        if (msg.key.fromMe && !text.startsWith("!")) {
+        // Dicek sebelum filter fromMe di bawah — kalau bot jalan di nomor
+        // pribadi owner, balasan "ya" ke konfirmasi kirim pesan juga fromMe,
+        // tapi tetap harus ditangani (bukan cuma command "!...").
+        if (await tryHandlePendingSendConfirmation(sock, jid, sender, text)) {
           continue;
         }
 
-        const sender = getSenderJid(sock, msg);
-
-        if (await tryHandlePendingSendConfirmation(sock, jid, sender, text)) {
+        if (msg.key.fromMe && !text.startsWith("!")) {
           continue;
         }
 
