@@ -1931,7 +1931,19 @@ function clearPendingSendConfirmation(sender) {
 async function tryHandlePendingSendConfirmation(sock, jid, sender, text) {
   const pending = pendingSendConfirmations.get(sender);
 
-  if (!pending || !["ya", "iya", "y", "yes"].includes(text.trim().toLowerCase())) {
+  if (!pending) {
+    return false;
+  }
+
+  // User biasanya tetap pakai prefix trigger AI ("!ai ya") kalau grupnya di
+  // mode command — lepas dulu prefix itu sebelum dicocokkan ke ya/iya.
+  const normalized = text
+    .trim()
+    .toLowerCase()
+    .replace(/^!ai\s+/, "")
+    .trim();
+
+  if (!["ya", "iya", "y", "yes"].includes(normalized)) {
     return false;
   }
 
