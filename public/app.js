@@ -285,6 +285,7 @@ async function openGroupSettings(group) {
   const card = $("#group-settings-card");
   const body = $("#group-settings-body");
   card.classList.remove("hidden");
+  card.scrollIntoView({ behavior: "smooth", block: "start" });
   $("#settings-group-name").textContent = group.name || group.groupId;
   body.innerHTML = '<p class="muted">Memuat...</p>';
   currentSettingsGroupId = group.groupId;
