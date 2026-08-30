@@ -250,21 +250,6 @@ main { padding: 20px; max-width: 1000px; margin: 0 auto; }
 
 .toggle-row label { flex-direction: row; align-items: center; }
 
-.feature-mode-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
-
-.feature-mode-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-}
-
-.feature-mode-row select { width: auto; }
-
 .small-btn {
   padding: 6px 10px;
   font-size: 0.8rem;

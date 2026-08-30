@@ -40,7 +40,6 @@ import {
   recordMessage as recordChatMessage,
   loadChatTakeoverState,
   updateMessageStatus,
-  setTakeover,
 } from "./admin/conversations.js";
 
 // =====================================================
@@ -290,7 +289,6 @@ function defaultSettings(groupId) {
     badWords: [],
     aiTriggerMode: null,
     aiModel: null,
-    aiFeatureModes: null,
   };
 }
 
@@ -305,7 +303,7 @@ async function getGroupSettings(groupId) {
     const { data, error } = await database
       .from("bot_group_settings")
       .select(
-        "group_id,welcome,anti_link,ai_enabled,anti_spam,img_moderation,bad_words,ai_trigger_mode,ai_model,ai_feature_modes"
+        "group_id,welcome,anti_link,ai_enabled,anti_spam,img_moderation,bad_words,ai_trigger_mode,ai_model"
       )
       .eq("group_id", groupId)
       .maybeSingle();
@@ -325,7 +323,6 @@ async function getGroupSettings(groupId) {
         badWords: Array.isArray(data.bad_words) ? data.bad_words : [],
         aiTriggerMode: data.ai_trigger_mode || null,
         aiModel: data.ai_model || null,
-        aiFeatureModes: data.ai_feature_modes || null,
       };
     } else {
       await database.from("bot_group_settings").upsert({
@@ -338,7 +335,6 @@ async function getGroupSettings(groupId) {
         bad_words: settings.badWords,
         ai_trigger_mode: settings.aiTriggerMode,
         ai_model: settings.aiModel,
-        ai_feature_modes: settings.aiFeatureModes,
         updated_at: new Date().toISOString(),
       });
     }
@@ -797,43 +793,6 @@ async function requireOwnerAdmin(sock, jid, sender, msg) {
   );
 
   return false;
-}
-
-// !human / !bot — pindahin switch takeover Live Chat ke chat langsung,
-// biar agent gak wajib buka dashboard buat ambil-alih/lepas satu percakapan.
-// Izinnya sudah dicek requireOwnerAdmin() di pemanggil sebelum sampai sini.
-async function handleTakeoverToggleCommand({ sock, jid, msg, takenOver, isGroup }) {
-  try {
-    await setTakeover(jid, {
-      takenOver,
-      byAdmin: takenOver ? msg.pushName || "admin" : undefined,
-      isGroup,
-    });
-
-    await sock.sendMessage(
-      jid,
-      {
-        text: takenOver
-          ? `🙋 *MODE MANUSIA AKTIF*\n\n${BOT_NAME} diam dulu di chat ini, agent yang lanjut manual. Ketik *!bot* buat kembalikan ke bot.${FOOTER}`
-          : `🤖 *MODE BOT AKTIF*\n\n${BOT_NAME} lanjut jawab otomatis lagi di chat ini.${FOOTER}`,
-      },
-      {
-        quoted: msg,
-      }
-    );
-  } catch (error) {
-    logError("Toggle takeover", error);
-
-    await sock.sendMessage(
-      jid,
-      {
-        text: `❌ Gagal ubah mode chat ini. Coba lagi ya.${FOOTER}`,
-      },
-      {
-        quoted: msg,
-      }
-    );
-  }
 }
 
 async function loadOwnerAdmins() {
@@ -1766,34 +1725,6 @@ function scheduleTriviaTimeout(groupId) {
 }
 
 // =====================================================
-// AI FEATURE TRIGGER MODE — command vs tanpa-command per fitur
-// =====================================================
-
-// Fitur mana yang butuh prefix "!ai"/mention (mode "command") vs bisa dipicu
-// obrolan bebas (mode "always"), per fitur ("chat", "reminder", "note",
-// "sendMessage"). Override paling spesifik menang: per-grup > global > mode
-// umum (aiTriggerMode) grup lalu global > default "command".
-function resolveFeatureMode(featureKey, settings) {
-  return (
-    settings?.aiFeatureModes?.[featureKey] ||
-    globalSettings.aiFeatureModes?.[featureKey] ||
-    settings?.aiTriggerMode ||
-    globalSettings.aiTriggerMode ||
-    "command"
-  );
-}
-
-const AI_TOOL_FEATURE = {
-  create_reminder: "reminder",
-  list_reminders: "reminder",
-  delete_reminder: "reminder",
-  add_note: "note",
-  list_notes: "note",
-  delete_note: "note",
-  send_message_to_number: "sendMessage",
-};
-
-// =====================================================
 // GEMINI REST
 // =====================================================
 
@@ -2214,8 +2145,6 @@ async function callGeminiGenerate({
   image = null,
   audio = null,
   model = null,
-  chatAllowed = true,
-  allowedFeatures = { reminder: true, note: true, sendMessage: true },
 }) {
   const history = await loadAIHistory(groupId);
 
@@ -2250,16 +2179,10 @@ async function callGeminiGenerate({
 
   const knowledgeContext = await buildKnowledgeContext(groupId, prompt).catch(() => "");
 
-  const tools = AI_TOOLS.filter((tool) => allowedFeatures[AI_TOOL_FEATURE[tool.function.name]]);
-
-  const restrictedNotice = chatAllowed
-    ? ""
-    : "\n\nPENTING: Pesan ini BUKAN lewat trigger AI eksplisit (bukan !ai atau mention). Kamu HANYA boleh merespons dengan memanggil salah satu tool di atas kalau pesan ini jelas-jelas minta aksi itu. Kalau pesan ini bukan permintaan untuk tool manapun, JANGAN merespons apa pun (jangan menjawab teks biasa).";
-
   const messages = [
     {
       role: "system",
-      content: `${geminiSystemInstruction(userName)}${knowledgeContext}${restrictedNotice}`,
+      content: `${geminiSystemInstruction(userName)}${knowledgeContext}`,
     },
     ...history.map((entry) => ({
       role: entry.role === "model" ? "assistant" : "user",
@@ -2280,7 +2203,7 @@ async function callGeminiGenerate({
     body: JSON.stringify({
       model: effectiveModel,
       messages,
-      tools,
+      tools: AI_TOOLS,
       temperature: 0.7,
       max_tokens: 1200,
     }),
@@ -2328,11 +2251,6 @@ async function callGeminiGenerate({
     }
 
     answer = results.join("\n\n");
-  } else if (!chatAllowed) {
-    // Pesan ini cuma "diintip" AI buat cek tool tanpa command (mis. reminder
-    // mode always) — kalau ternyata bukan permintaan tool, diam total,
-    // jangan kirim obrolan bebas yang harusnya butuh !ai/mention.
-    return null;
   } else {
     answer = extractAiText(data) || "Maaf, AI belum memberikan jawaban. 😅";
   }
@@ -3172,39 +3090,25 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
     return;
   }
 
+  const triggerMode = settings.aiTriggerMode || globalSettings.aiTriggerMode || "command";
+  const alwaysMode = triggerMode === "always";
   const aiCommand = command === "!ai" || command.startsWith("!ai ");
   const mentioned = isBotMentioned(sock, msg);
-  const explicitTrigger = aiCommand || mentioned;
 
-  // Setiap fitur AI (obrolan umum, reminder, note, kirim pesan) punya mode
-  // sendiri-sendiri — command (butuh !ai/mention) atau always (tanpa
-  // command). Trigger eksplisit selalu membuka semuanya; kalau tidak
-  // eksplisit, cuma fitur yang di-set "always" yang tetap bisa dipicu.
-  const chatAllowed = explicitTrigger || resolveFeatureMode("chat", settings) === "always";
-  const allowedFeatures = {
-    reminder: explicitTrigger || resolveFeatureMode("reminder", settings) === "always",
-    note: explicitTrigger || resolveFeatureMode("note", settings) === "always",
-    sendMessage: explicitTrigger || resolveFeatureMode("sendMessage", settings) === "always",
-  };
-  const anyFeatureAllowed =
-    allowedFeatures.reminder || allowedFeatures.note || allowedFeatures.sendMessage;
-
-  if (!chatAllowed && !anyFeatureAllowed) {
+  if (!alwaysMode && !aiCommand && !mentioned) {
     return;
   }
 
   if (!settings.aiEnabled) {
-    if (explicitTrigger) {
-      await sock.sendMessage(
-        jid,
-        {
-          text: `🔇 ${BOT_NAME} sedang dinonaktifkan oleh admin.${FOOTER}`,
-        },
-        {
-          quoted: msg,
-        }
-      );
-    }
+    await sock.sendMessage(
+      jid,
+      {
+        text: `🔇 ${BOT_NAME} sedang dinonaktifkan oleh admin.${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
 
     return;
   }
@@ -3212,17 +3116,15 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
   const question = cleanAIQuestion(text);
 
   if (question.length > MAX_QUESTION_LENGTH) {
-    if (explicitTrigger) {
-      await sock.sendMessage(
-        jid,
-        {
-          text: `⚠️ Pertanyaan maksimal ${MAX_QUESTION_LENGTH} karakter.${FOOTER}`,
-        },
-        {
-          quoted: msg,
-        }
-      );
-    }
+    await sock.sendMessage(
+      jid,
+      {
+        text: `⚠️ Pertanyaan maksimal ${MAX_QUESTION_LENGTH} karakter.${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
 
     return;
   }
@@ -3231,38 +3133,31 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
   const last = aiCooldown.get(cooldownKey) || 0;
 
   if (!msg.key.fromMe && Date.now() - last < AI_COOLDOWN_MS) {
-    if (explicitTrigger) {
-      const remaining = Math.ceil((AI_COOLDOWN_MS - (Date.now() - last)) / 1000);
+    const remaining = Math.ceil((AI_COOLDOWN_MS - (Date.now() - last)) / 1000);
 
-      await sock.sendMessage(
-        jid,
-        {
-          text: `⏳ Tunggu ${remaining} detik sebelum tanya AI lagi.${FOOTER}`,
-        },
-        {
-          quoted: msg,
-        }
-      );
-    }
+    await sock.sendMessage(
+      jid,
+      {
+        text: `⏳ Tunggu ${remaining} detik sebelum tanya AI lagi.${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
 
     return;
   }
 
   aiCooldown.set(cooldownKey, Date.now());
 
-  // Reaksi "lagi mikir" cuma buat trigger yang beneran dijamin dijawab —
-  // kalau cuma diintip buat cek fitur "always" (chatAllowed=false), jangan
-  // react ke semua chat biasa yang ujung-ujungnya didiamkan juga.
-  if (chatAllowed) {
-    try {
-      await sock.sendMessage(jid, {
-        react: {
-          text: "🧠",
-          key: msg.key,
-        },
-      });
-    } catch {}
-  }
+  try {
+    await sock.sendMessage(jid, {
+      react: {
+        text: "🧠",
+        key: msg.key,
+      },
+    });
+  } catch {}
 
   try {
     const image = await downloadImageAsBase64(sock, msg);
@@ -3284,13 +3179,7 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
       image,
       audio,
       model: settings.aiModel,
-      chatAllowed,
-      allowedFeatures,
     });
-
-    if (answer === null) {
-      return;
-    }
 
     const sent = await sock.sendMessage(
       jid,
@@ -3313,20 +3202,15 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
   } catch (error) {
     logError("Gemini", error);
 
-    // Cuma laporkan gagal ke chat kalau ini trigger yang beneran diminta —
-    // jangan spam "gagal memproses" ke obrolan biasa yang cuma diintip
-    // buat cek fitur "always".
-    if (chatAllowed) {
-      await sock.sendMessage(
-        jid,
-        {
-          text: `⚠️ ${BOT_NAME} gagal memproses permintaan. Coba lagi ya.${FOOTER}`,
-        },
-        {
-          quoted: msg,
-        }
-      );
-    }
+    await sock.sendMessage(
+      jid,
+      {
+        text: `⚠️ ${BOT_NAME} gagal memproses permintaan. Coba lagi ya.${FOOTER}`,
+      },
+      {
+        quoted: msg,
+      }
+    );
   }
 }
 
@@ -3628,23 +3512,8 @@ async function startWhatsApp() {
 
         if (isPersonalChat) {
           const dmText = getMessageText(msg.message).trim();
-          const dmCommand = dmText.toLowerCase();
 
           if (await tryHandlePendingSendConfirmation(sock, jid, jid, dmText)) {
-            continue;
-          }
-
-          if (dmCommand === "!human" || dmCommand === "!bot") {
-            if (await requireOwnerAdmin(sock, jid, jid, msg)) {
-              await handleTakeoverToggleCommand({
-                sock,
-                jid,
-                msg,
-                takenOver: dmCommand === "!human",
-                isGroup: false,
-              });
-            }
-
             continue;
           }
 
@@ -3667,6 +3536,7 @@ async function startWhatsApp() {
           }).catch((error) => logError("Record chat message", error));
 
           if (globalSettings.dmEnabled) {
+            const dmCommand = dmText.toLowerCase();
             const dmSettings = defaultSettings(jid);
             dmSettings.aiTriggerMode = globalSettings.aiTriggerMode;
             dmSettings.aiModel = globalSettings.aiModel;
@@ -3969,24 +3839,6 @@ async function startWhatsApp() {
         }
 
         // =================================================
-        // TAKEOVER — alih chat ini ke agent manusia / balik ke bot
-        // =================================================
-
-        if (command === "!human" || command === "!bot") {
-          if (!(await requireOwnerAdmin(sock, jid, sender, msg))) continue;
-
-          await handleTakeoverToggleCommand({
-            sock,
-            jid,
-            msg,
-            takenOver: command === "!human",
-            isGroup: true,
-          });
-
-          continue;
-        }
-
-        // =================================================
         // OWNER MENU
         // =================================================
 
@@ -3996,7 +3848,7 @@ async function startWhatsApp() {
           await sock.sendMessage(
             jid,
             {
-              text: `👑 *${BOT_NAME} OWNER MENU*\n\n━━━━━━━━━━━━━━━━━━\n\n📊 !status\nStatus bot, database, memory, uptime\n\n👥 !groups\nLihat semua grup yang diikuti bot\n\n🔐 !setgroup list\nLihat whitelist grup aktif\n\n🔐 !setgroup add GROUP_ID\nTambah grup ke whitelist\n\n🔐 !setgroup remove GROUP_ID\nHapus grup dari whitelist\n\n📢 !broadcast pesan\nKirim pesan ke semua grup whitelist\n*Khusus owner*\n\n💾 !backupdb\nBackup database jadi file JSON\n*Khusus owner*\n\n🧑‍💼 !owneradmin add @user\nTambah admin owner\n\n🧑‍💼 !owneradmin remove @user\nHapus admin owner\n\n🧑‍💼 !owneradmin list\nLihat admin owner\n\n🙋 !human\nAmbil alih chat ini dari bot (mode manusia)\n\n🤖 !bot\nKembalikan chat ini ke bot\n\n━━━━━━━━━━━━━━━━━━\n\n${BOT_CREDIT}`,
+              text: `👑 *${BOT_NAME} OWNER MENU*\n\n━━━━━━━━━━━━━━━━━━\n\n📊 !status\nStatus bot, database, memory, uptime\n\n👥 !groups\nLihat semua grup yang diikuti bot\n\n🔐 !setgroup list\nLihat whitelist grup aktif\n\n🔐 !setgroup add GROUP_ID\nTambah grup ke whitelist\n\n🔐 !setgroup remove GROUP_ID\nHapus grup dari whitelist\n\n📢 !broadcast pesan\nKirim pesan ke semua grup whitelist\n*Khusus owner*\n\n💾 !backupdb\nBackup database jadi file JSON\n*Khusus owner*\n\n🧑‍💼 !owneradmin add @user\nTambah admin owner\n\n🧑‍💼 !owneradmin remove @user\nHapus admin owner\n\n🧑‍💼 !owneradmin list\nLihat admin owner\n\n━━━━━━━━━━━━━━━━━━\n\n${BOT_CREDIT}`,
             },
             {
               quoted: msg,

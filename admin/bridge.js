@@ -25,10 +25,6 @@ export const globalSettings = {
   aiSystemPrompt: null,
   aiApiKey: null,
   aiBaseUrl: null,
-  // Override per-fitur AI: { chat, reminder, note, sendMessage } -> "command" |
-  // "always" | null (null = ikut aiTriggerMode). Lihat resolveFeatureMode() di
-  // index.js.
-  aiFeatureModes: null,
 };
 
 export const botState = {

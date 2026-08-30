@@ -1,48 +1,6 @@
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
-// Fitur AI yang mode trigger-nya (command / tanpa command) bisa diatur
-// terpisah dari mode trigger umum — dipakai di tab Grup & tab Pengaturan AI.
-const AI_FEATURES = [
-  { key: "chat", label: "Obrolan AI umum" },
-  { key: "reminder", label: "Reminder (buat/lihat/hapus)" },
-  { key: "note", label: "Catatan (simpan/lihat/hapus)" },
-  { key: "sendMessage", label: "Kirim pesan ke nomor lain" },
-];
-
-function renderFeatureModeSelects(container, values) {
-  container.innerHTML = "";
-
-  for (const feature of AI_FEATURES) {
-    const row = document.createElement("label");
-    row.className = "feature-mode-row";
-    row.innerHTML = `
-      <span>${feature.label}</span>
-      <select data-feature="${feature.key}">
-        <option value="">Ikuti default</option>
-        <option value="command">Command (!ai atau mention)</option>
-        <option value="always">Tanpa command</option>
-      </select>
-    `;
-    row.querySelector("select").value = values?.[feature.key] || "";
-    container.appendChild(row);
-  }
-}
-
-function readFeatureModeSelects(container) {
-  const result = {};
-  let hasAny = false;
-
-  for (const select of container.querySelectorAll("select[data-feature]")) {
-    if (select.value) {
-      result[select.dataset.feature] = select.value;
-      hasAny = true;
-    }
-  }
-
-  return hasAny ? result : null;
-}
-
 async function api(path, options = {}) {
   const response = await fetch(path, {
     ...options,
@@ -296,7 +254,6 @@ async function openGroupSettings(group) {
   $("#group-trigger-mode").value = settings.aiTriggerMode || "";
   $("#group-ai-model").value = settings.aiModel || "";
   $("#group-ai-result").textContent = "";
-  renderFeatureModeSelects($("#group-feature-modes"), settings.aiFeatureModes);
 
   for (const field of SETTINGS_FIELDS) {
     const row = document.createElement("div");
@@ -513,7 +470,6 @@ $("#save-group-ai-btn").addEventListener("click", async () => {
       body: JSON.stringify({
         aiTriggerMode: $("#group-trigger-mode").value || null,
         aiModel: $("#group-ai-model").value.trim() || null,
-        aiFeatureModes: readFeatureModeSelects($("#group-feature-modes")),
       }),
     });
     result.textContent = "✅ Tersimpan";
@@ -537,7 +493,6 @@ async function loadGlobalSettings() {
   $("#global-ai-api-key-status").textContent = settings.aiApiKeySet
     ? `Tersimpan (${settings.aiApiKeyPreview})`
     : "Belum diset — pakai default dari env";
-  renderFeatureModeSelects($("#global-feature-modes"), settings.aiFeatureModes);
 }
 
 $("#save-global-settings-btn").addEventListener("click", async () => {
@@ -553,7 +508,6 @@ $("#save-global-settings-btn").addEventListener("click", async () => {
       botCredit: $("#global-bot-credit").value.trim() || null,
       aiSystemPrompt: $("#global-ai-system-prompt").value.trim() || null,
       aiBaseUrl: $("#global-ai-base-url").value.trim() || null,
-      aiFeatureModes: readFeatureModeSelects($("#global-feature-modes")),
     };
 
     const apiKey = $("#global-ai-api-key").value.trim();
