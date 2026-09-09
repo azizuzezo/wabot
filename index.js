@@ -114,7 +114,13 @@ const BOT_PHONE_NUMBER =
 // !csstatus command — CS Portal + SC/SkorLife chatbot status summary. Each
 // pair is optional independently: a service whose BASE_URL/API_KEY isn't set
 // is just reported as "not configured" rather than erroring the whole
-// command (see CS_STATUS_SERVICES below).
+// command. BASE_URLs are just each service's domain root (no path) — the
+// `/api/...`-prefixed path is added in the !csstatus handler itself.
+// SC_CHATBOT_BASE_URL specifically must be https://cs.skorcard.app (that
+// domain serves sc-chatbot's Next.js frontend, with its Go backend
+// reverse-proxied under /api on the same domain — see CSPORTAL's
+// ENGINEERING.md §10, "an earlier sc-chatbot.skorcard.app subdomain guess
+// was wrong").
 const CSPORTAL_BASE_URL = String(process.env.CSPORTAL_BASE_URL || "").trim().replace(/\/$/, "");
 const CSPORTAL_API_KEY = String(process.env.CSPORTAL_API_KEY || "").trim();
 const SC_CHATBOT_BASE_URL = String(process.env.SC_CHATBOT_BASE_URL || "").trim().replace(/\/$/, "");
@@ -1046,7 +1052,7 @@ function jakartaDayRangeISO() {
 // above, generalized for a JSON GET with a bearer token — used by !csstatus
 // to call CS Portal / sc-chatbot / skorlife-chatbot without one slow/dead
 // service blocking (or crashing) the others.
-async function fetchJSON(url, apiKey, timeoutMs = 10_000) {
+async function fetchJSON(url, apiKey, timeoutMs = 15_000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -3618,13 +3624,23 @@ async function startWhatsApp() {
           continue;
         }
 
-        if (!jid || !jid.endsWith("@g.us") || !ALLOWED_GROUPS.has(jid)) {
+        if (!jid || !jid.endsWith("@g.us")) {
+          continue;
+        }
+
+        // Owner selalu boleh lewat, di grup manapun (bukan cuma whitelist) —
+        // sender harus dihitung sebelum gate whitelist supaya bypass ini bisa
+        // dicek. Pesan dari non-owner di grup non-whitelist tetap diabaikan
+        // seperti biasa (isOwnerSender-nya false untuk mereka).
+        const sender = getSenderJid(sock, msg);
+        const isOwnerSender = isOwner(sock, sender, msg);
+
+        if (!ALLOWED_GROUPS.has(jid) && !isOwnerSender) {
           continue;
         }
 
         const text = getMessageText(msg.message).trim();
         const command = text.toLowerCase();
-        const sender = getSenderJid(sock, msg);
 
         // Dicek sebelum filter fromMe di bawah — kalau bot jalan di nomor
         // pribadi owner, balasan "ya" ke konfirmasi kirim pesan juga fromMe,
@@ -3966,7 +3982,10 @@ async function startWhatsApp() {
         // =================================================
 
         if (command === "!csstatus") {
-          if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
+          // Bot owner selalu boleh, di grup manapun, terlepas dari status
+          // admin WhatsApp-nya di grup itu — cuma non-owner yang dicek
+          // requireAdmin (admin grup WhatsApp).
+          if (!isOwnerSender && !(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
 
           const { start, end, label } = jakartaDayRangeISO();
           const lines = [`📡 *CS PORTAL & CHATBOT STATUS* — ${label}`, ""];
@@ -3999,7 +4018,7 @@ async function startWhatsApp() {
           if (SC_CHATBOT_BASE_URL && SC_CHATBOT_API_KEY) {
             try {
               const d = await fetchJSON(
-                `${SC_CHATBOT_BASE_URL}/integrations/cs-portal/weekly-metrics?start=${encodeURIComponent(
+                `${SC_CHATBOT_BASE_URL}/api/integrations/cs-portal/weekly-metrics?start=${encodeURIComponent(
                   start
                 )}&end=${encodeURIComponent(end)}`,
                 SC_CHATBOT_API_KEY
