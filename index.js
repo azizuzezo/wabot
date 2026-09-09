@@ -4024,7 +4024,7 @@ async function startWhatsApp() {
                 SC_CHATBOT_API_KEY
               );
               lines.push(
-                `*SC Chatbot* (Skor Desk)`,
+                `*Skorcard Chatbot*`,
                 `• Chat hari ini: ${d.total_sessions ?? "-"} (chatbot-only: ${d.chatbot_only_sessions ?? "-"}, ke agent: ${
                   d.chat_agent_sessions ?? "-"
                 })`,
@@ -4032,10 +4032,10 @@ async function startWhatsApp() {
                 `• Rata-rata waktu tangani (agent): ${formatHandlingSeconds(d.avg_handling_seconds)}`
               );
             } catch (err) {
-              lines.push(`*SC Chatbot* ⚠️ Gagal diambil (${err.message})`);
+              lines.push(`*Skorcard Chatbot* ⚠️ Gagal diambil (${err.message})`);
             }
           } else {
-            lines.push(`*SC Chatbot* ⏭️ Belum dikonfigurasi (SC_CHATBOT_BASE_URL/SC_CHATBOT_API_KEY)`);
+            lines.push(`*Skorcard Chatbot* ⏭️ Belum dikonfigurasi (SC_CHATBOT_BASE_URL/SC_CHATBOT_API_KEY)`);
           }
 
           lines.push("");
@@ -4070,6 +4070,77 @@ async function startWhatsApp() {
             { text: lines.join("\n") + FOOTER },
             { quoted: msg }
           );
+
+          continue;
+        }
+
+        // =================================================
+        // WEEKLY REPORT
+        // =================================================
+
+        if (command === "!weeklyreport") {
+          if (!isOwnerSender && !(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
+
+          if (!CSPORTAL_BASE_URL || !CSPORTAL_API_KEY) {
+            await sock.sendMessage(
+              jid,
+              { text: `⏭️ CS Portal belum dikonfigurasi (CSPORTAL_BASE_URL/CSPORTAL_API_KEY).${FOOTER}` },
+              { quoted: msg }
+            );
+            continue;
+          }
+
+          try {
+            // Timeout dilebihkan dari default fetchJSON (15s) — endpoint ini
+            // sendiri manggil 4 request ke masing-masing chatbot (periode
+            // sekarang + periode sebelumnya, buat tren CSAT).
+            const d = await fetchJSON(
+              `${CSPORTAL_BASE_URL}/api/external/weekly-report`,
+              CSPORTAL_API_KEY,
+              25_000
+            );
+            await sock.sendMessage(jid, { text: d.text + FOOTER }, { quoted: msg });
+          } catch (err) {
+            await sock.sendMessage(
+              jid,
+              { text: `⚠️ Gagal ambil Weekly Report (${err.message}).${FOOTER}` },
+              { quoted: msg }
+            );
+          }
+
+          continue;
+        }
+
+        // =================================================
+        // CARD CLOSE DAILY REPORT
+        // =================================================
+
+        if (command === "!cardclosereport") {
+          if (!isOwnerSender && !(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
+
+          if (!CSPORTAL_BASE_URL || !CSPORTAL_API_KEY) {
+            await sock.sendMessage(
+              jid,
+              { text: `⏭️ CS Portal belum dikonfigurasi (CSPORTAL_BASE_URL/CSPORTAL_API_KEY).${FOOTER}` },
+              { quoted: msg }
+            );
+            continue;
+          }
+
+          try {
+            const d = await fetchJSON(
+              `${CSPORTAL_BASE_URL}/api/external/card-close-daily-report`,
+              CSPORTAL_API_KEY,
+              20_000
+            );
+            await sock.sendMessage(jid, { text: d.text + FOOTER }, { quoted: msg });
+          } catch (err) {
+            await sock.sendMessage(
+              jid,
+              { text: `⚠️ Gagal ambil Card Close Daily Report (${err.message}).${FOOTER}` },
+              { quoted: msg }
+            );
+          }
 
           continue;
         }
@@ -4526,7 +4597,7 @@ async function startWhatsApp() {
           await sock.sendMessage(
             jid,
             {
-              text: `🛡️ *${BOT_NAME} ADMIN COMMANDS*\n\n━━━━━━━━━━━━━━━━━━\n\n📡 !csstatus\nStatus CS Portal, SC Desk & SkorLife chatbot\n\n👋 !welcome on\n👋 !welcome off\n\n🚫 !antilink on\n🚫 !antilink off\n\n🧠 !aibot on\n🧠 !aibot off\n\n🚫 !antispam on\n🚫 !antispam off\n\n🖼️ !imgmod on\n🖼️ !imgmod off\n\n🚫 !badword add/remove/list\n\n📈 !statsreset\n\n📢 !tagall [pesan]\n\n🗑 !del\nReply pesan lalu hapus pesan tersebut\n\n⚠️ !warn @user [alasan]\n✅ !unwarn @user\n📋 !warnings\n\n👢 !kick @user\n⬆️ !promote @user\n⬇️ !demote @user\n\n━━━━━━━━━━━━━━━━━━\n\n⚠️ Hapus pesan, kick, promote, demote, anti-link, anti-spam, badword, dan moderasi gambar membutuhkan akun bot menjadi admin grup.${FOOTER}`,
+              text: `🛡️ *${BOT_NAME} ADMIN COMMANDS*\n\n━━━━━━━━━━━━━━━━━━\n\n📡 !csstatus\nStatus CS Portal, Skorcard & SkorLife chatbot\n\n📊 !weeklyreport\nWeekly CS Metric Report (SC Desk & SL Desk)\n\n🗓️ !cardclosereport\nCard Close Daily Report\n\n👋 !welcome on\n👋 !welcome off\n\n🚫 !antilink on\n🚫 !antilink off\n\n🧠 !aibot on\n🧠 !aibot off\n\n🚫 !antispam on\n🚫 !antispam off\n\n🖼️ !imgmod on\n🖼️ !imgmod off\n\n🚫 !badword add/remove/list\n\n📈 !statsreset\n\n📢 !tagall [pesan]\n\n🗑 !del\nReply pesan lalu hapus pesan tersebut\n\n⚠️ !warn @user [alasan]\n✅ !unwarn @user\n📋 !warnings\n\n👢 !kick @user\n⬆️ !promote @user\n⬇️ !demote @user\n\n━━━━━━━━━━━━━━━━━━\n\n⚠️ Hapus pesan, kick, promote, demote, anti-link, anti-spam, badword, dan moderasi gambar membutuhkan akun bot menjadi admin grup.${FOOTER}`,
             },
             {
               quoted: msg,
