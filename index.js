@@ -111,6 +111,17 @@ const BOT_PHONE_NUMBER =
   String(process.env.BOT_PHONE_NUMBER || "")
     .replace(/\D/g, "");
 
+// !csstatus command — CS Portal + SC/SkorLife chatbot status summary. Each
+// pair is optional independently: a service whose BASE_URL/API_KEY isn't set
+// is just reported as "not configured" rather than erroring the whole
+// command (see CS_STATUS_SERVICES below).
+const CSPORTAL_BASE_URL = String(process.env.CSPORTAL_BASE_URL || "").trim().replace(/\/$/, "");
+const CSPORTAL_API_KEY = String(process.env.CSPORTAL_API_KEY || "").trim();
+const SC_CHATBOT_BASE_URL = String(process.env.SC_CHATBOT_BASE_URL || "").trim().replace(/\/$/, "");
+const SC_CHATBOT_API_KEY = String(process.env.SC_CHATBOT_API_KEY || "").trim();
+const SKORLIFE_CHATBOT_BASE_URL = String(process.env.SKORLIFE_CHATBOT_BASE_URL || "").trim().replace(/\/$/, "");
+const SKORLIFE_CHATBOT_API_KEY = String(process.env.SKORLIFE_CHATBOT_API_KEY || "").trim();
+
 const AI_COOLDOWN_MS = 8_000;
 const MAX_QUESTION_LENGTH = 1_500;
 const MAX_RESPONSE_LENGTH = 3_500;
@@ -1009,6 +1020,58 @@ function formatUptime(ms) {
   const s = seconds % 60;
 
   return `${d}d ${h}h ${m}m ${s}s`;
+}
+
+// =====================================================
+// CS STATUS (!csstatus) HELPERS
+// =====================================================
+
+// jakartaDayRangeISO: [start, end) for "today" in Asia/Jakarta (UTC+7,
+// fixed offset — no DST), expressed as UTC ISO instants — the format both
+// weekly-metrics endpoints (sc-chatbot's Go time.Parse(RFC3339,...) and
+// skorlife-chatbot's `new Date(...)`) and CS Portal expect.
+function jakartaDayRangeISO() {
+  const JKT_OFFSET_MS = 7 * 60 * 60 * 1000;
+  const jktNow = new Date(Date.now() + JKT_OFFSET_MS);
+  const y = jktNow.getUTCFullYear();
+  const m = jktNow.getUTCMonth();
+  const d = jktNow.getUTCDate();
+  const startUTC = new Date(Date.UTC(y, m, d, 0, 0, 0) - JKT_OFFSET_MS);
+  const endUTC = new Date(startUTC.getTime() + 24 * 60 * 60 * 1000);
+  const label = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return { start: startUTC.toISOString(), end: endUTC.toISOString(), label };
+}
+
+// fetchJSON: same fetch+AbortController timeout pattern as generateAiImage
+// above, generalized for a JSON GET with a bearer token — used by !csstatus
+// to call CS Portal / sc-chatbot / skorlife-chatbot without one slow/dead
+// service blocking (or crashing) the others.
+async function fetchJSON(url, apiKey, timeoutMs = 10_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function formatCsatLine(buckets) {
+  if (!buckets || !buckets.total) return "belum ada rating";
+  return `👍${buckets.happy} 😐${buckets.neutral} 👎${buckets.sad} (dari ${buckets.total})`;
+}
+
+function formatHandlingSeconds(seconds) {
+  if (seconds == null) return "-";
+  const m = Math.round(seconds / 60);
+  return `~${m} menit`;
 }
 
 // =====================================================
@@ -3899,6 +3962,100 @@ async function startWhatsApp() {
         }
 
         // =================================================
+        // CS STATUS
+        // =================================================
+
+        if (command === "!csstatus") {
+          if (!(await requireAdmin(sock, jid, sender, msg, metadata))) continue;
+
+          const { start, end, label } = jakartaDayRangeISO();
+          const lines = [`📡 *CS PORTAL & CHATBOT STATUS* — ${label}`, ""];
+
+          if (CSPORTAL_BASE_URL && CSPORTAL_API_KEY) {
+            try {
+              const d = await fetchJSON(
+                `${CSPORTAL_BASE_URL}/api/external/whatsapp-summary`,
+                CSPORTAL_API_KEY
+              );
+              const portalIcon =
+                d.portal?.status === "operational" ? "✅" : d.portal?.status === "slow" ? "🟡" : "🔴";
+              lines.push(
+                `*CS Portal* ${portalIcon} ${d.portal?.status || "unknown"} (${d.portal?.ms ?? "?"}ms)`,
+                `• SC Desk — Open: ${d.sc_desk?.open ?? "-"}, Escalated: ${d.sc_desk?.escalated ?? "-"}`,
+                `• SL Desk — Open: ${d.sl_desk?.open ?? "-"}, Escalated: ${d.sl_desk?.escalated ?? "-"}`,
+                `• Card Close hari ini — Request baru: ${d.card_close?.new_today ?? "-"}, Selesai: ${
+                  d.card_close?.done_today ?? "-"
+                }`
+              );
+            } catch (err) {
+              lines.push(`*CS Portal* ⚠️ Gagal diambil (${err.message})`);
+            }
+          } else {
+            lines.push(`*CS Portal* ⏭️ Belum dikonfigurasi (CSPORTAL_BASE_URL/CSPORTAL_API_KEY)`);
+          }
+
+          lines.push("");
+
+          if (SC_CHATBOT_BASE_URL && SC_CHATBOT_API_KEY) {
+            try {
+              const d = await fetchJSON(
+                `${SC_CHATBOT_BASE_URL}/integrations/cs-portal/weekly-metrics?start=${encodeURIComponent(
+                  start
+                )}&end=${encodeURIComponent(end)}`,
+                SC_CHATBOT_API_KEY
+              );
+              lines.push(
+                `*SC Chatbot* (Skor Desk)`,
+                `• Chat hari ini: ${d.total_sessions ?? "-"} (chatbot-only: ${d.chatbot_only_sessions ?? "-"}, ke agent: ${
+                  d.chat_agent_sessions ?? "-"
+                })`,
+                `• Rating overall: ${formatCsatLine(d.csat_overall)}`,
+                `• Rata-rata waktu tangani (agent): ${formatHandlingSeconds(d.avg_handling_seconds)}`
+              );
+            } catch (err) {
+              lines.push(`*SC Chatbot* ⚠️ Gagal diambil (${err.message})`);
+            }
+          } else {
+            lines.push(`*SC Chatbot* ⏭️ Belum dikonfigurasi (SC_CHATBOT_BASE_URL/SC_CHATBOT_API_KEY)`);
+          }
+
+          lines.push("");
+
+          if (SKORLIFE_CHATBOT_BASE_URL && SKORLIFE_CHATBOT_API_KEY) {
+            try {
+              const d = await fetchJSON(
+                `${SKORLIFE_CHATBOT_BASE_URL}/api/integrations/cs-portal/weekly-metrics?start=${encodeURIComponent(
+                  start
+                )}&end=${encodeURIComponent(end)}`,
+                SKORLIFE_CHATBOT_API_KEY
+              );
+              lines.push(
+                `*SkorLife Chatbot*`,
+                `• Chat hari ini: ${d.total_sessions ?? "-"} (chatbot-only: ${d.chatbot_only_sessions ?? "-"}, ke agent: ${
+                  d.chat_agent_sessions ?? "-"
+                })`,
+                `• Rating overall: ${formatCsatLine(d.csat_overall)}`,
+                `• Rata-rata waktu tangani (agent): ${formatHandlingSeconds(d.avg_handling_seconds)}`
+              );
+            } catch (err) {
+              lines.push(`*SkorLife Chatbot* ⚠️ Gagal diambil (${err.message})`);
+            }
+          } else {
+            lines.push(
+              `*SkorLife Chatbot* ⏭️ Belum dikonfigurasi (SKORLIFE_CHATBOT_BASE_URL/SKORLIFE_CHATBOT_API_KEY)`
+            );
+          }
+
+          await sock.sendMessage(
+            jid,
+            { text: lines.join("\n") + FOOTER },
+            { quoted: msg }
+          );
+
+          continue;
+        }
+
+        // =================================================
         // GROUPS
         // =================================================
 
@@ -4350,7 +4507,7 @@ async function startWhatsApp() {
           await sock.sendMessage(
             jid,
             {
-              text: `🛡️ *${BOT_NAME} ADMIN COMMANDS*\n\n━━━━━━━━━━━━━━━━━━\n\n👋 !welcome on\n👋 !welcome off\n\n🚫 !antilink on\n🚫 !antilink off\n\n🧠 !aibot on\n🧠 !aibot off\n\n🚫 !antispam on\n🚫 !antispam off\n\n🖼️ !imgmod on\n🖼️ !imgmod off\n\n🚫 !badword add/remove/list\n\n📈 !statsreset\n\n📢 !tagall [pesan]\n\n🗑 !del\nReply pesan lalu hapus pesan tersebut\n\n⚠️ !warn @user [alasan]\n✅ !unwarn @user\n📋 !warnings\n\n👢 !kick @user\n⬆️ !promote @user\n⬇️ !demote @user\n\n━━━━━━━━━━━━━━━━━━\n\n⚠️ Hapus pesan, kick, promote, demote, anti-link, anti-spam, badword, dan moderasi gambar membutuhkan akun bot menjadi admin grup.${FOOTER}`,
+              text: `🛡️ *${BOT_NAME} ADMIN COMMANDS*\n\n━━━━━━━━━━━━━━━━━━\n\n📡 !csstatus\nStatus CS Portal, SC Desk & SkorLife chatbot\n\n👋 !welcome on\n👋 !welcome off\n\n🚫 !antilink on\n🚫 !antilink off\n\n🧠 !aibot on\n🧠 !aibot off\n\n🚫 !antispam on\n🚫 !antispam off\n\n🖼️ !imgmod on\n🖼️ !imgmod off\n\n🚫 !badword add/remove/list\n\n📈 !statsreset\n\n📢 !tagall [pesan]\n\n🗑 !del\nReply pesan lalu hapus pesan tersebut\n\n⚠️ !warn @user [alasan]\n✅ !unwarn @user\n📋 !warnings\n\n👢 !kick @user\n⬆️ !promote @user\n⬇️ !demote @user\n\n━━━━━━━━━━━━━━━━━━\n\n⚠️ Hapus pesan, kick, promote, demote, anti-link, anti-spam, badword, dan moderasi gambar membutuhkan akun bot menjadi admin grup.${FOOTER}`,
             },
             {
               quoted: msg,
