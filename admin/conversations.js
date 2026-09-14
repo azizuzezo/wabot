@@ -22,6 +22,8 @@ function buildMediaUrl(jid, filename) {
 
 function mediaPreviewText(mediaType, mediaFilename) {
   if (mediaType === "image") return "📷 Foto";
+  if (mediaType === "audio") return "🎤 Voice note";
+  if (mediaType === "sticker") return "🏷️ Stiker";
   if (mediaType === "document") return `📄 ${mediaFilename || "Dokumen"}`;
   return "";
 }
@@ -62,6 +64,7 @@ function mapMessageRow(row) {
     replyToId: row.reply_to_id || null,
     replyToText: row.reply_to_text || null,
     replyToSender: row.reply_to_sender || null,
+    mediaViewOnce: Boolean(row.media_view_once),
   };
 }
 
@@ -117,12 +120,14 @@ export async function recordMessage({
   let mediaPath = null;
   let mediaFilename = null;
   let mediaMimetype = null;
+  let mediaViewOnce = false;
 
   if (media?.buffer) {
     mediaType = media.mediaType;
     mediaMimetype = media.mimetype || null;
     mediaFilename = media.filename || null;
     mediaPath = saveMedia(jid, media.buffer, media.mimetype);
+    mediaViewOnce = Boolean(media.viewOnce);
   }
 
   const replyToId = replyTo?.id || null;
@@ -143,6 +148,7 @@ export async function recordMessage({
     media_path: mediaPath,
     media_filename: mediaFilename,
     media_mimetype: mediaMimetype,
+    media_view_once: mediaViewOnce,
     reply_to_id: replyToId,
     reply_to_text: replyToText,
     reply_to_sender: replyToSender,
@@ -171,6 +177,7 @@ export async function recordMessage({
     mediaUrl: buildMediaUrl(jid, mediaPath),
     mediaFilename,
     mediaMimetype,
+    mediaViewOnce,
     replyToId,
     replyToText,
     replyToSender,
@@ -227,7 +234,7 @@ export async function getMessages(jid, { limit = MESSAGE_HISTORY_LIMIT } = {}) {
   const { data, error } = await database
     .from("bot_chat_messages")
     .select(
-      "id,jid,direction,sender_jid,push_name,text,from_bot,from_admin,created_at,media_type,media_path,media_filename,media_mimetype,status,reply_to_id,reply_to_text,reply_to_sender"
+      "id,jid,direction,sender_jid,push_name,text,from_bot,from_admin,created_at,media_type,media_path,media_filename,media_mimetype,status,reply_to_id,reply_to_text,reply_to_sender,media_view_once"
     )
     .eq("jid", jid)
     .order("created_at", { ascending: false })
@@ -342,7 +349,18 @@ export async function sendChatMessage({ jid, isGroup, text, fromAdmin, chatName,
 // (caption opsional), audio/* -> voice note (PTT, tanpa caption — WA tidak
 // mendukung caption di pesan suara), selain itu -> pesan dokumen (perlu
 // fileName).
-export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, caption, fromAdmin, chatName, replyTo }) {
+export async function sendChatMedia({
+  jid,
+  isGroup,
+  buffer,
+  mimetype,
+  filename,
+  caption,
+  fromAdmin,
+  chatName,
+  replyTo,
+  viewOnce,
+}) {
   ensureDatabase();
 
   if (!botState.sock) {
@@ -371,7 +389,7 @@ export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, 
   }
 
   const payload = isImage
-    ? { image: buffer, mimetype, caption: caption || undefined }
+    ? { image: buffer, mimetype, caption: caption || undefined, viewOnce: Boolean(viewOnce) }
     : isAudio
     ? { audio: audioBuffer, mimetype: audioMimetype, ptt: true }
     : { document: buffer, mimetype, fileName: filename || "document", caption: caption || undefined };
@@ -389,7 +407,7 @@ export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, 
     chatName,
     media: isAudio
       ? { mediaType, buffer: audioBuffer, mimetype: audioMimetype, filename }
-      : { mediaType, buffer, mimetype, filename },
+      : { mediaType, buffer, mimetype, filename, viewOnce: isImage && Boolean(viewOnce) },
     replyTo: replyTo?.id ? { id: replyTo.id, sender: replyTo.sender || null, text: replyTo.text || null } : null,
   });
 

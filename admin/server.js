@@ -558,6 +558,7 @@ export function startAdminServer({ botName } = {}) {
               text: req.body?.replyToText || null,
             }
           : null,
+        viewOnce: req.body?.viewOnce === "true",
       });
 
       res.json({ success: true });

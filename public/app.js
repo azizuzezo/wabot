@@ -792,6 +792,10 @@ function mediaBubbleHtml(msg) {
     return `<audio class="bubble-audio" controls src="${url}"></audio>`;
   }
 
+  if (msg.mediaType === "sticker") {
+    return `<img class="bubble-sticker" src="${url}" alt="Stiker" />`;
+  }
+
   if (msg.mediaType === "document") {
     return `
       <a class="bubble-document" href="${url}" target="_blank" rel="noopener" download>
@@ -809,6 +813,7 @@ function mediaBubbleHtml(msg) {
 function mediaTypeLabel(mediaType) {
   if (mediaType === "image") return "📷 Gambar";
   if (mediaType === "audio") return "🎤 Voice note";
+  if (mediaType === "sticker") return "🏷️ Stiker";
   if (mediaType === "document") return "📄 Dokumen";
   return "";
 }
@@ -874,6 +879,7 @@ function appendBubble(msg) {
   const label = isOut ? (msg.fromBot ? "Bot" : msg.fromAdmin || "Admin") : msg.pushName || msg.senderJid || "";
   const textHtml = msg.text ? `<div class="bubble-text">${escapeHtml(msg.text)}</div>` : "";
   const ticks = isOut ? ticksSvg(msg.status) : "";
+  const viewOnceTag = msg.mediaViewOnce ? `<span class="bubble-viewonce-tag">🔥 Sekali lihat</span>` : "";
 
   // Data buat "klik reply" di tombol bubble-reply-btn — teks yang dikutip
   // makenya pesan aslinya (fallback ke label tipe media kalau tanpa teks).
@@ -881,7 +887,7 @@ function appendBubble(msg) {
   bubble.dataset.replySender = msg.senderJid || "";
   bubble.dataset.replyFromMe = isOut ? "true" : "false";
 
-  bubble.innerHTML = `${replyPreviewHtml(msg)}${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta">${replyButtonHtml()}<span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span>${ticks}</span>`;
+  bubble.innerHTML = `${replyPreviewHtml(msg)}${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta">${replyButtonHtml()}${viewOnceTag}<span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span>${ticks}</span>`;
 
   container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
@@ -966,9 +972,11 @@ async function openChat(jid) {
 // ---- Live Chat: lampiran gambar/dokumen ----
 
 let pendingAttachment = null;
+let viewOnceEnabled = false;
 
 function clearPendingAttachment() {
   pendingAttachment = null;
+  viewOnceEnabled = false;
   $("#inbox-attach-preview").classList.add("hidden");
   const img = $("#inbox-attach-preview-img");
   img.classList.add("hidden");
@@ -979,6 +987,9 @@ function clearPendingAttachment() {
   audio.src = "";
   $("#inbox-attach-preview-name").textContent = "";
   $("#inbox-attach-input").value = "";
+  const viewOnceBtn = $("#inbox-viewonce-toggle");
+  viewOnceBtn.classList.add("hidden");
+  viewOnceBtn.setAttribute("aria-pressed", "false");
 }
 
 function renderPendingAttachment() {
@@ -994,14 +1005,21 @@ function renderPendingAttachment() {
   const img = $("#inbox-attach-preview-img");
   const icon = $("#inbox-attach-preview-icon");
   const audio = $("#inbox-attach-preview-audio");
+  const viewOnceBtn = $("#inbox-viewonce-toggle");
+  const isImage = pendingAttachment.type.startsWith("image/");
 
   img.classList.add("hidden");
   img.src = "";
   icon.classList.add("hidden");
   audio.classList.add("hidden");
   audio.src = "";
+  viewOnceBtn.classList.toggle("hidden", !isImage);
+  if (!isImage) {
+    viewOnceEnabled = false;
+    viewOnceBtn.setAttribute("aria-pressed", "false");
+  }
 
-  if (pendingAttachment.type.startsWith("image/")) {
+  if (isImage) {
     img.src = URL.createObjectURL(pendingAttachment);
     img.classList.remove("hidden");
   } else if (pendingAttachment.type.startsWith("audio/")) {
@@ -1011,6 +1029,11 @@ function renderPendingAttachment() {
     icon.classList.remove("hidden");
   }
 }
+
+$("#inbox-viewonce-toggle").addEventListener("click", () => {
+  viewOnceEnabled = !viewOnceEnabled;
+  $("#inbox-viewonce-toggle").setAttribute("aria-pressed", String(viewOnceEnabled));
+});
 
 $("#inbox-attach-btn").addEventListener("click", () => {
   $("#inbox-attach-input").click();
@@ -1178,6 +1201,7 @@ $("#inbox-send-btn").addEventListener("click", async () => {
   if (pendingAttachment) {
     const file = pendingAttachment;
     const caption = text;
+    const viewOnce = viewOnceEnabled;
     textarea.value = "";
     clearPendingAttachment();
     clearReplyingTo();
@@ -1186,6 +1210,7 @@ $("#inbox-send-btn").addEventListener("click", async () => {
       const formData = new FormData();
       formData.append("file", file);
       if (caption) formData.append("caption", caption);
+      if (viewOnce) formData.append("viewOnce", "true");
 
       if (reply) {
         formData.append("replyToId", reply.id);
