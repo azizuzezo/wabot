@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { database } from "./db.js";
 import { botState, botEvents, setChatTakeover } from "./bridge.js";
 import { saveMedia } from "./mediaStore.js";
+import { convertToVoiceNote } from "./audioConvert.js";
 
 const MESSAGE_HISTORY_LIMIT = 200;
 const CHAT_LIST_LIMIT = 200;
@@ -86,7 +87,7 @@ async function touchChatState({ jid, isGroup, name, preview, at }) {
 // message WhatsApp asli (msg.key.id) supaya idempotent — kalau baileys
 // re-deliver event yang sama, insert kedua akan gagal karena PK bentrok dan
 // diabaikan diam-diam, bukan dobel tercatat.
-// media (opsional): { mediaType: 'image'|'document', buffer, mimetype, filename }
+// media (opsional): { mediaType: 'image'|'document'|'audio', buffer, mimetype, filename }
 // — file asli disimpan ke disk di sini (saveMedia), DB cuma nyimpan nama filenya.
 export async function recordMessage({
   id,
@@ -297,9 +298,11 @@ export async function sendChatMessage({ jid, isGroup, text, fromAdmin, chatName 
   await setTakeover(jid, { takenOver: true, byAdmin: fromAdmin, isGroup, name: chatName });
 }
 
-// Sama seperti sendChatMessage tapi dengan lampiran gambar/dokumen. Tipe
-// ditentukan dari mimetype upload-nya: image/* -> pesan gambar (caption
-// opsional), selain itu -> pesan dokumen (perlu fileName).
+// Sama seperti sendChatMessage tapi dengan lampiran gambar/dokumen/voice
+// note. Tipe ditentukan dari mimetype upload-nya: image/* -> pesan gambar
+// (caption opsional), audio/* -> voice note (PTT, tanpa caption — WA tidak
+// mendukung caption di pesan suara), selain itu -> pesan dokumen (perlu
+// fileName).
 export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, caption, fromAdmin, chatName }) {
   ensureDatabase();
 
@@ -308,10 +311,30 @@ export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, 
   }
 
   const isImage = String(mimetype || "").startsWith("image/");
-  const mediaType = isImage ? "image" : "document";
+  const isAudio = String(mimetype || "").startsWith("audio/");
+  const mediaType = isImage ? "image" : isAudio ? "audio" : "document";
+
+  let audioBuffer = buffer;
+  let audioMimetype = mimetype;
+
+  if (isAudio) {
+    // Transcode ke Ogg/Opus (format asli voice note WA) apapun sumbernya —
+    // webm dari rekam browser, mp3/wav upload, atau wav dari Gemini TTS.
+    // Tanpa ini WA cuma nampilin lampiran audio biasa, bukan bubble voice
+    // note. Kalau ffmpeg gagal, tetap coba kirim buffer asli apa adanya
+    // daripada gagal total.
+    try {
+      audioBuffer = await convertToVoiceNote(buffer);
+      audioMimetype = "audio/ogg; codecs=opus";
+    } catch (error) {
+      console.error("Konversi voice note (ffmpeg) gagal, kirim audio asli:", error.message);
+    }
+  }
 
   const payload = isImage
     ? { image: buffer, mimetype, caption: caption || undefined }
+    : isAudio
+    ? { audio: audioBuffer, mimetype: audioMimetype, ptt: true }
     : { document: buffer, mimetype, fileName: filename || "document", caption: caption || undefined };
 
   const sent = await botState.sock.sendMessage(jid, payload);
@@ -324,7 +347,9 @@ export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, 
     text: caption || null,
     fromAdmin,
     chatName,
-    media: { mediaType, buffer, mimetype, filename },
+    media: isAudio
+      ? { mediaType, buffer: audioBuffer, mimetype: audioMimetype, filename }
+      : { mediaType, buffer, mimetype, filename },
   });
 
   await setTakeover(jid, { takenOver: true, byAdmin: fromAdmin, isGroup, name: chatName });

@@ -14,11 +14,20 @@ const EXT_BY_MIME = {
   "image/webp": "webp",
   "image/gif": "gif",
   "application/pdf": "pdf",
+  "audio/ogg": "ogg",
+  "audio/webm": "webm",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/wav": "wav",
 };
 
 function extFromMime(mimetype) {
-  if (EXT_BY_MIME[mimetype]) return EXT_BY_MIME[mimetype];
-  const sub = String(mimetype || "").split("/")[1] || "bin";
+  // Rekaman browser (MediaRecorder) suka nempelin parameter codec, mis.
+  // "audio/webm;codecs=opus" — buang dulu sebelum dicocokkan/dipakai jadi
+  // ekstensi, biar tidak jadi "webmcodecsopus".
+  const bare = String(mimetype || "").split(";")[0].trim();
+  if (EXT_BY_MIME[bare]) return EXT_BY_MIME[bare];
+  const sub = bare.split("/")[1] || "bin";
   return sub.replace(/[^a-z0-9]/gi, "").slice(0, 10) || "bin";
 }
 

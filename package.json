@@ -12,6 +12,7 @@
     "node": "22.x"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@hapi/boom": "latest",
     "@supabase/supabase-js": "latest",
     "@whiskeysockets/baileys": "latest",

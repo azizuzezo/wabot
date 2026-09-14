@@ -138,6 +138,7 @@
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                 <polyline points="14 2 14 8 20 8" />
               </svg>
+              <audio id="inbox-attach-preview-audio" class="inbox-attach-preview-audio hidden" controls></audio>
               <span id="inbox-attach-preview-name" class="inbox-attach-preview-name"></span>
               <button id="inbox-attach-remove-btn" class="icon-btn" type="button" aria-label="Batal lampiran">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -148,12 +149,26 @@
             </div>
             <div class="inbox-thread-composer">
               <input type="file" id="inbox-attach-input" hidden />
-              <button id="inbox-attach-btn" class="icon-btn" type="button" aria-label="Lampirkan gambar atau dokumen">
+              <button id="inbox-attach-btn" class="icon-btn" type="button" aria-label="Lampirkan gambar, dokumen, atau audio (audio dikirim sebagai voice note)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                 </svg>
               </button>
               <textarea id="inbox-compose-text" rows="2" placeholder="Ketik pesan..."></textarea>
+              <button id="inbox-tts-btn" class="icon-btn" type="button" aria-label="Ubah teks jadi voice note suara AI (Gemini TTS)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m12 3-1.9 5.8a2 2 0 0 1-1.287 1.288L3 12l5.8 1.9a2 2 0 0 1 1.288 1.287L12 21l1.9-5.8a2 2 0 0 1 1.287-1.288L21 12l-5.8-1.9a2 2 0 0 1-1.288-1.287Z" />
+                </svg>
+              </button>
+              <span id="inbox-record-timer" class="inbox-record-timer hidden">0:00</span>
+              <button id="inbox-record-btn" class="icon-btn" type="button" aria-label="Rekam voice note">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              </button>
               <button id="inbox-send-btn" class="send-btn" type="button" aria-label="Kirim pesan">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <line x1="22" y1="2" x2="11" y2="13" />

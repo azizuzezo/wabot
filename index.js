@@ -520,11 +520,11 @@ function getMessageText(message) {
   );
 }
 
-// Dipakai admin panel Live Chat: unduh gambar/dokumen pesan masuk (kalau
-// ada) supaya bisa ditampilkan sebagai bubble media, bukan cuma teks caption.
-// Return null kalau pesan tidak punya media atau gagal diunduh (mis. media
-// sudah kedaluwarsa di server WA) — dalam kedua kasus pesan tetap direkam,
-// cuma tanpa lampiran.
+// Dipakai admin panel Live Chat: unduh gambar/dokumen/voice note pesan masuk
+// (kalau ada) supaya bisa ditampilkan sebagai bubble media, bukan cuma teks
+// caption. Return null kalau pesan tidak punya media atau gagal diunduh
+// (mis. media sudah kedaluwarsa di server WA) — dalam kedua kasus pesan
+// tetap direkam, cuma tanpa lampiran.
 async function extractIncomingMedia(sock, msg) {
   const content = unwrapMessage(msg.message);
 
@@ -532,9 +532,9 @@ async function extractIncomingMedia(sock, msg) {
     return null;
   }
 
-  const { imageMessage, documentMessage } = content;
+  const { imageMessage, documentMessage, audioMessage } = content;
 
-  if (!imageMessage && !documentMessage) {
+  if (!imageMessage && !documentMessage && !audioMessage) {
     return null;
   }
 
@@ -557,6 +557,15 @@ async function extractIncomingMedia(sock, msg) {
         mediaType: "image",
         buffer,
         mimetype: (imageMessage.mimetype || "image/jpeg").split(";")[0].trim(),
+        filename: null,
+      };
+    }
+
+    if (audioMessage) {
+      return {
+        mediaType: "audio",
+        buffer,
+        mimetype: (audioMessage.mimetype || "audio/ogg").split(";")[0].trim(),
         filename: null,
       };
     }

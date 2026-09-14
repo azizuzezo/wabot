@@ -788,6 +788,10 @@ function mediaBubbleHtml(msg) {
     return `<a href="${url}" target="_blank" rel="noopener"><img class="bubble-image" src="${url}" alt="" /></a>`;
   }
 
+  if (msg.mediaType === "audio") {
+    return `<audio class="bubble-audio" controls src="${url}"></audio>`;
+  }
+
   if (msg.mediaType === "document") {
     return `
       <a class="bubble-document" href="${url}" target="_blank" rel="noopener" download>
@@ -853,6 +857,7 @@ function appendBubble(msg) {
 }
 
 async function openChat(jid) {
+  cancelRecording();
   activeChatJid = jid;
   lastBubbleDateKey = null;
   renderChatList();
@@ -900,6 +905,9 @@ function clearPendingAttachment() {
   img.classList.add("hidden");
   img.src = "";
   $("#inbox-attach-preview-icon").classList.add("hidden");
+  const audio = $("#inbox-attach-preview-audio");
+  audio.classList.add("hidden");
+  audio.src = "";
   $("#inbox-attach-preview-name").textContent = "";
   $("#inbox-attach-input").value = "";
 }
@@ -916,14 +924,21 @@ function renderPendingAttachment() {
 
   const img = $("#inbox-attach-preview-img");
   const icon = $("#inbox-attach-preview-icon");
+  const audio = $("#inbox-attach-preview-audio");
+
+  img.classList.add("hidden");
+  img.src = "";
+  icon.classList.add("hidden");
+  audio.classList.add("hidden");
+  audio.src = "";
 
   if (pendingAttachment.type.startsWith("image/")) {
     img.src = URL.createObjectURL(pendingAttachment);
     img.classList.remove("hidden");
-    icon.classList.add("hidden");
+  } else if (pendingAttachment.type.startsWith("audio/")) {
+    audio.src = URL.createObjectURL(pendingAttachment);
+    audio.classList.remove("hidden");
   } else {
-    img.classList.add("hidden");
-    img.src = "";
     icon.classList.remove("hidden");
   }
 }
@@ -935,12 +950,153 @@ $("#inbox-attach-btn").addEventListener("click", () => {
 $("#inbox-attach-input").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
+  cancelRecording();
   pendingAttachment = file;
   renderPendingAttachment();
 });
 
 $("#inbox-attach-remove-btn").addEventListener("click", () => {
   clearPendingAttachment();
+});
+
+// ---- Live Chat: rekam voice note ----
+
+let mediaRecorder = null;
+let recordedChunks = [];
+let recordingStartedAt = null;
+let recordingTimerId = null;
+let recordingCancelled = false;
+
+function pickRecorderMimeType() {
+  const candidates = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  return candidates.find((type) => window.MediaRecorder?.isTypeSupported?.(type)) || "";
+}
+
+function updateRecordTimer() {
+  const elapsed = Math.floor((Date.now() - recordingStartedAt) / 1000);
+  const mins = Math.floor(elapsed / 60);
+  const secs = String(elapsed % 60).padStart(2, "0");
+  $("#inbox-record-timer").textContent = `${mins}:${secs}`;
+}
+
+function stopRecording() {
+  if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+  mediaRecorder.stop();
+  clearInterval(recordingTimerId);
+  recordingTimerId = null;
+  $("#inbox-record-btn").classList.remove("recording");
+  $("#inbox-record-timer").classList.add("hidden");
+}
+
+// Dipanggil saat operator pindah chat di tengah rekaman — hentikan mic tapi
+// buang hasil rekamannya (bukan buat pendingAttachment di chat yang baru).
+function cancelRecording() {
+  if (!mediaRecorder) return;
+  recordingCancelled = true;
+  stopRecording();
+}
+
+async function startRecording() {
+  let stream;
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (error) {
+    alert("Tidak bisa mengakses mikrofon: " + error.message);
+    return;
+  }
+
+  const mimeType = pickRecorderMimeType();
+  mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+  recordedChunks = [];
+
+  mediaRecorder.addEventListener("dataavailable", (e) => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  });
+
+  mediaRecorder.addEventListener("stop", () => {
+    stream.getTracks().forEach((track) => track.stop());
+
+    const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || mimeType || "audio/webm" });
+    const ext = blob.type.includes("ogg") ? "ogg" : blob.type.includes("mp4") ? "m4a" : "webm";
+    const cancelled = recordingCancelled;
+    recordingCancelled = false;
+    mediaRecorder = null;
+
+    if (cancelled || blob.size === 0) return;
+
+    pendingAttachment = new File([blob], `voice-note.${ext}`, { type: blob.type });
+    renderPendingAttachment();
+  });
+
+  mediaRecorder.start();
+  recordingStartedAt = Date.now();
+  $("#inbox-record-btn").classList.add("recording");
+  $("#inbox-record-timer").classList.remove("hidden");
+  updateRecordTimer();
+  recordingTimerId = setInterval(updateRecordTimer, 1000);
+}
+
+$("#inbox-record-btn").addEventListener("click", () => {
+  if (!activeChatJid) return;
+
+  if (mediaRecorder) {
+    stopRecording();
+    return;
+  }
+
+  clearPendingAttachment();
+  startRecording();
+});
+
+// ---- Live Chat: voice note dari teks pakai suara AI (Gemini TTS) ----
+
+async function generateTtsAudio(jid, text) {
+  const response = await fetch(`/api/chats/${encodeURIComponent(jid)}/tts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!response.ok) {
+    let message = `Request gagal (${response.status})`;
+    try {
+      const data = await response.json();
+      message = data?.error || message;
+    } catch {
+      // respons error bukan JSON, pakai pesan default di atas
+    }
+    throw new Error(message);
+  }
+
+  return response.blob();
+}
+
+$("#inbox-tts-btn").addEventListener("click", async () => {
+  if (!activeChatJid) return;
+
+  const textarea = $("#inbox-compose-text");
+  const text = textarea.value.trim();
+
+  if (!text) {
+    alert("Ketik teks yang mau dibacakan dulu.");
+    return;
+  }
+
+  cancelRecording();
+  const btn = $("#inbox-tts-btn");
+  btn.classList.add("loading");
+
+  try {
+    const blob = await generateTtsAudio(activeChatJid, text);
+    pendingAttachment = new File([blob], "voice-note-ai.wav", { type: blob.type || "audio/wav" });
+    textarea.value = "";
+    renderPendingAttachment();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    btn.classList.remove("loading");
+  }
 });
 
 $("#inbox-send-btn").addEventListener("click", async () => {

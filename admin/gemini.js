@@ -110,6 +110,86 @@ export async function testChatModel(model, { baseUrl, apiKey } = {}) {
   }
 }
 
+// TTS juga selalu ke endpoint resmi Google + GEMINI_API_KEY, sama seperti
+// embedText di atas — proxy chat pihak ketiga (AI_BASE_URL/AI_API_KEY) belum
+// tentu mendukung endpoint /interactions ini.
+const TTS_BASE_URL = EMBED_BASE_URL;
+const TTS_API_KEY = EMBED_API_KEY;
+const TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.1-flash-tts-preview";
+const TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
+
+// Gemini TTS balikin audio sebagai PCM mentah (mono, 16-bit, 24kHz) via
+// base64, bukan file audio yang siap diputar — makanya perlu dibungkus
+// header WAV manual di sini (44 byte, format PCM standar) biar bisa
+// diputar di browser maupun dikirim sebagai voice note WhatsApp.
+function pcmToWav(pcmBuffer, { sampleRate = 24000, channels = 1, bitDepth = 16 } = {}) {
+  const byteRate = (sampleRate * channels * bitDepth) / 8;
+  const blockAlign = (channels * bitDepth) / 8;
+  const header = Buffer.alloc(44);
+
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcmBuffer.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitDepth, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcmBuffer.length, 40);
+
+  return Buffer.concat([header, pcmBuffer]);
+}
+
+// Dipakai admin panel Live Chat: ubah teks jadi voice note bersuara AI
+// (Gemini 3.1 Flash TTS) sebelum dikirim ke WhatsApp. Beda dari generateContent
+// biasa, TTS Gemini lewat endpoint /interactions (bukan /models/{model}:generateContent).
+export async function synthesizeSpeech(text, { voice } = {}) {
+  if (!TTS_API_KEY) {
+    throw new Error("GEMINI_API_KEY tidak dikonfigurasi");
+  }
+
+  const response = await fetch(`${TTS_BASE_URL}/interactions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": TTS_API_KEY,
+    },
+    body: JSON.stringify({
+      model: TTS_MODEL,
+      input: text,
+      response_format: { type: "audio" },
+      generation_config: {
+        speech_config: [{ voice: voice || TTS_VOICE }],
+      },
+    }),
+  });
+
+  const raw = await response.text();
+  let data;
+
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`TTS API invalid response: ${raw}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`TTS API error ${response.status}: ${data?.error?.message || raw}`);
+  }
+
+  const base64 = data?.output_audio?.data;
+
+  if (!base64) {
+    throw new Error("TTS API tidak mengembalikan audio");
+  }
+
+  return pcmToWav(Buffer.from(base64, "base64"));
+}
+
 export function cosineSimilarity(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length || !a.length) {
     return 0;

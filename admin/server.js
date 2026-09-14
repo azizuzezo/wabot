@@ -35,7 +35,7 @@ import {
   deleteKnowledge,
 } from "./knowledge.js";
 import { loadGlobalSettings, updateGlobalSettings } from "./globalSettings.js";
-import { testChatModel } from "./gemini.js";
+import { testChatModel, synthesizeSpeech } from "./gemini.js";
 import {
   listAdminUsers,
   createAdminUser,
@@ -552,6 +552,33 @@ export function startAdminServer({ botName } = {}) {
       });
 
       res.json({ success: true });
+    })
+  );
+
+  // Voice note dari teks pakai suara Gemini 3.1 Flash TTS. Cuma generate &
+  // balikin file WAV mentah (belum dikirim/direkam) — dipakai admin panel
+  // buat preview dulu, dikirim lewat /api/chats/:jid/media (endpoint yang
+  // sama dipakai lampiran manual) begitu admin klik kirim.
+  app.post(
+    "/api/chats/:jid/tts",
+    asyncRoute(async (req, res) => {
+      const jid = req.params.jid;
+      const isGroup = jid.endsWith("@g.us");
+
+      if (!canAccessChat(req, jid, isGroup)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke chat ini" });
+      }
+
+      const text = String(req.body?.text || "").trim();
+
+      if (!text) {
+        return res.status(400).json({ success: false, error: "Teks wajib diisi" });
+      }
+
+      const wavBuffer = await synthesizeSpeech(text);
+
+      res.set("Content-Type", "audio/wav");
+      res.send(wavBuffer);
     })
   );
 
