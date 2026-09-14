@@ -34,6 +34,11 @@ export const botState = {
   pairingCode: null,
   botName: null,
   startedAt: Date.now(),
+  // fbid dari upload banner (w:biz cover_photo) terakhir — dibutuhkan Baileys
+  // buat hapus banner (removeCoverPhoto perlu id-nya). Cuma di-memory, tidak
+  // persist ke DB: kalau bot restart setelah upload banner, tombol hapus di
+  // dashboard butuh upload ulang dulu supaya id-nya diketahui lagi.
+  accountCoverPhotoId: null,
 };
 
 export function setSock(sock) {
@@ -66,6 +71,10 @@ export function setPairingCode(code) {
 
 export function setBotName(name) {
   botState.botName = name;
+}
+
+export function setAccountCoverPhotoId(id) {
+  botState.accountCoverPhotoId = id || null;
 }
 
 // Live Chat inbox — status takeover per percakapan (jid -> true kalau lagi

@@ -40,6 +40,7 @@
     <button class="tab-btn" data-tab="inbox">Live Chat</button>
     <button class="tab-btn super-only" data-tab="admins">Owner Admin</button>
     <button class="tab-btn" data-tab="knowledge">Knowledge Base</button>
+    <button class="tab-btn super-only" data-tab="account">Akun WhatsApp</button>
     <button class="tab-btn super-only" data-tab="ai-settings">Pengaturan AI</button>
     <button class="tab-btn super-only" data-tab="admin-users">Akun Admin</button>
   </nav>
@@ -253,6 +254,99 @@
           <button id="knowledge-filter-btn">Filter</button>
         </div>
         <div id="knowledge-list" class="list"></div>
+      </div>
+    </section>
+
+    <section id="tab-account" class="tab-panel">
+      <p id="account-disconnected-notice" class="muted hidden">⚠️ WhatsApp belum terhubung — hubungkan dulu di tab Dashboard sebelum mengubah profil.</p>
+
+      <div class="card">
+        <h2>Foto Profil</h2>
+        <div class="account-photo-row">
+          <img id="account-photo-preview" class="account-photo-preview" alt="Foto profil" />
+          <div class="account-photo-actions">
+            <input type="file" id="account-photo-input" accept="image/*" class="hidden" />
+            <button id="account-photo-upload-btn" class="small-btn" type="button">Ganti Foto</button>
+            <button id="account-photo-remove-btn" class="small-btn danger" type="button">Hapus Foto</button>
+          </div>
+        </div>
+        <p id="account-photo-result" class="muted"></p>
+      </div>
+
+      <div class="card">
+        <h2>Banner / Cover Photo</h2>
+        <p class="muted">Cuma berlaku untuk akun WhatsApp Business (rekomendasi ukuran ±1125×600px). Akun WhatsApp personal biasa tidak punya banner.</p>
+        <div class="account-photo-row">
+          <img id="account-cover-preview" class="account-cover-preview hidden" alt="Banner" />
+          <div class="account-photo-actions">
+            <input type="file" id="account-cover-input" accept="image/*" class="hidden" />
+            <button id="account-cover-upload-btn" class="small-btn" type="button">Ganti Banner</button>
+            <button id="account-cover-remove-btn" class="small-btn danger" type="button">Hapus Banner</button>
+          </div>
+        </div>
+        <p id="account-cover-result" class="muted"></p>
+      </div>
+
+      <div class="card">
+        <h2>Nama &amp; Status (About)</h2>
+        <label>Nama Profil WhatsApp
+          <input type="text" id="account-name-input" placeholder="Nama yang tampil di WhatsApp" />
+        </label>
+        <label>Status / About
+          <input type="text" id="account-status-input" placeholder="Contoh: Ketik !ai buat tanya ke bot" />
+        </label>
+        <button id="account-save-name-btn" class="small-btn" type="button">Simpan Nama</button>
+        <button id="account-save-status-btn" class="small-btn" type="button">Simpan Status</button>
+        <p id="account-name-result" class="muted"></p>
+      </div>
+
+      <div class="card">
+        <h2>Privacy</h2>
+        <label>Terakhir dilihat (Last seen)
+          <select id="account-privacy-last">
+            <option value="all">Semua orang</option>
+            <option value="contacts">Kontak saya</option>
+            <option value="contact_blacklist">Kontak saya, kecuali...</option>
+            <option value="none">Tidak seorang pun</option>
+          </select>
+        </label>
+        <label>Status Online
+          <select id="account-privacy-online">
+            <option value="all">Semua orang</option>
+            <option value="match_last_seen">Sama seperti Last seen</option>
+          </select>
+        </label>
+        <label>Foto Profil
+          <select id="account-privacy-profile">
+            <option value="all">Semua orang</option>
+            <option value="contacts">Kontak saya</option>
+            <option value="contact_blacklist">Kontak saya, kecuali...</option>
+            <option value="none">Tidak seorang pun</option>
+          </select>
+        </label>
+        <label>Status (Story)
+          <select id="account-privacy-status">
+            <option value="all">Semua orang</option>
+            <option value="contacts">Kontak saya</option>
+            <option value="contact_blacklist">Kontak saya, kecuali...</option>
+            <option value="none">Tidak seorang pun</option>
+          </select>
+        </label>
+        <label>Tanda Terbaca (Read receipts)
+          <select id="account-privacy-readreceipts">
+            <option value="all">Aktif</option>
+            <option value="none">Nonaktif</option>
+          </select>
+        </label>
+        <label>Siapa yang bisa menambahkan saya ke grup
+          <select id="account-privacy-groupadd">
+            <option value="all">Semua orang</option>
+            <option value="contacts">Kontak saya</option>
+            <option value="contact_blacklist">Kontak saya, kecuali...</option>
+          </select>
+        </label>
+        <button id="account-save-privacy-btn" class="small-btn" type="button">Simpan Privacy</button>
+        <p id="account-privacy-result" class="muted"></p>
       </div>
     </section>
 

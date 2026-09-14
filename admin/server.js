@@ -7,7 +7,7 @@ import session from "express-session";
 import multer from "multer";
 import QRCode from "qrcode";
 
-import { botState, botEvents, getStatusSnapshot, globalSettings } from "./bridge.js";
+import { botState, botEvents, getStatusSnapshot, globalSettings, setAccountCoverPhotoId } from "./bridge.js";
 import {
   adminAuthConfigured,
   verifyCredentials,
@@ -250,6 +250,25 @@ export function startAdminServer({ botName } = {}) {
     })
   );
 
+  // Keluar beneran dari grup WhatsApp (bukan cuma nonaktifkan bot di grup itu
+  // — groupLeave bikin bot kepentok grup dan butuh diundang ulang kalau mau balik).
+  app.post(
+    "/api/groups/:groupId/leave",
+    asyncRoute(async (req, res) => {
+      if (!canAccessGroup(req, req.params.groupId)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke grup ini" });
+      }
+
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      await botState.sock.groupLeave(req.params.groupId);
+      await setGroupEnabled(req.params.groupId, false);
+      res.json({ success: true });
+    })
+  );
+
   app.get(
     "/api/groups/:groupId/settings",
     asyncRoute(async (req, res) => {
@@ -325,6 +344,167 @@ export function startAdminServer({ botName } = {}) {
 
       const updated = await updateGlobalSettings(patch);
       res.json({ success: true, settings: updated });
+    })
+  );
+
+  // ---- Akun WhatsApp: foto profil, banner (WA Business), nama, status,
+  // privacy (khusus super admin — bot-wide, satu akun WA per bot) ----
+
+  app.get(
+    "/api/account",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      const jid = botState.sock.user?.id;
+      const [photoUrl, privacy, statusList] = await Promise.all([
+        botState.sock.profilePictureUrl(jid, "image").catch(() => null),
+        botState.sock.fetchPrivacySettings(true).catch(() => ({})),
+        botState.sock.fetchStatus(jid).catch(() => null),
+      ]);
+
+      res.json({
+        success: true,
+        account: {
+          jid,
+          name: botState.sock.user?.name || null,
+          status: statusList?.[0]?.status?.status || null,
+          photoUrl,
+          hasCoverPhotoId: Boolean(botState.accountCoverPhotoId),
+          privacy,
+        },
+      });
+    })
+  );
+
+  app.post(
+    "/api/account/photo",
+    requireSuper,
+    upload.single("file"),
+    asyncRoute(async (req, res) => {
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: "File wajib diunggah" });
+      }
+
+      await botState.sock.updateProfilePicture(botState.sock.user.id, req.file.buffer);
+      res.json({ success: true });
+    })
+  );
+
+  app.delete(
+    "/api/account/photo",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      await botState.sock.removeProfilePicture(botState.sock.user.id);
+      res.json({ success: true });
+    })
+  );
+
+  // Banner/cover photo — cuma tampil di akun WhatsApp Business, bukan akun
+  // personal biasa (WhatsApp tidak punya "banner" untuk akun personal).
+  app.post(
+    "/api/account/cover-photo",
+    requireSuper,
+    upload.single("file"),
+    asyncRoute(async (req, res) => {
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ success: false, error: "File wajib diunggah" });
+      }
+
+      const fbid = await botState.sock.updateCoverPhoto(req.file.buffer);
+      setAccountCoverPhotoId(String(fbid));
+      res.json({ success: true });
+    })
+  );
+
+  app.delete(
+    "/api/account/cover-photo",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      if (!botState.accountCoverPhotoId) {
+        return res.status(400).json({
+          success: false,
+          error: "ID banner tidak diketahui (bot baru restart) — upload banner baru dulu untuk bisa hapus dari sini.",
+        });
+      }
+
+      await botState.sock.removeCoverPhoto(botState.accountCoverPhotoId);
+      setAccountCoverPhotoId(null);
+      res.json({ success: true });
+    })
+  );
+
+  app.put(
+    "/api/account/name",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      const name = String(req.body?.name || "").trim();
+
+      if (!name) {
+        return res.status(400).json({ success: false, error: "Nama wajib diisi" });
+      }
+
+      await botState.sock.updateProfileName(name);
+      res.json({ success: true });
+    })
+  );
+
+  app.put(
+    "/api/account/status",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      await botState.sock.updateProfileStatus(String(req.body?.status || "").trim());
+      res.json({ success: true });
+    })
+  );
+
+  app.put(
+    "/api/account/privacy",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      if (!botState.sock) {
+        return res.status(503).json({ success: false, error: "WhatsApp belum terhubung" });
+      }
+
+      const patch = req.body || {};
+      const ops = [];
+
+      if (patch.last) ops.push(botState.sock.updateLastSeenPrivacy(patch.last));
+      if (patch.online) ops.push(botState.sock.updateOnlinePrivacy(patch.online));
+      if (patch.profile) ops.push(botState.sock.updateProfilePicturePrivacy(patch.profile));
+      if (patch.status) ops.push(botState.sock.updateStatusPrivacy(patch.status));
+      if (patch.readreceipts) ops.push(botState.sock.updateReadReceiptsPrivacy(patch.readreceipts));
+      if (patch.groupadd) ops.push(botState.sock.updateGroupsAddPrivacy(patch.groupadd));
+
+      await Promise.all(ops);
+      const privacy = await botState.sock.fetchPrivacySettings(true);
+      res.json({ success: true, privacy });
     })
   );
 

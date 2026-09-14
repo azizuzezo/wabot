@@ -213,6 +213,7 @@ async function loadGroups() {
       <button class="small-btn ${group.enabled ? "danger" : ""}" data-action="${group.enabled ? "remove" : "add"}">
         ${group.enabled ? "Nonaktifkan" : "Aktifkan"}
       </button>
+      <button class="small-btn danger leave-btn" type="button">Keluar Grup</button>
     `;
 
     row.querySelector('[data-action]').addEventListener("click", async () => {
@@ -232,6 +233,19 @@ async function loadGroups() {
     });
 
     row.querySelector(".settings-btn").addEventListener("click", () => openGroupSettings(group));
+
+    row.querySelector(".leave-btn").addEventListener("click", async () => {
+      if (!confirm(`Keluar dari grup "${group.name || group.groupId}"? Bot tidak akan bisa balik lagi kecuali diundang ulang.`)) {
+        return;
+      }
+
+      try {
+        await api(`/api/groups/${encodeURIComponent(group.groupId)}/leave`, { method: "POST" });
+        loadGroups();
+      } catch (error) {
+        alert(error.message);
+      }
+    });
 
     list.appendChild(row);
   }
@@ -473,6 +487,159 @@ $("#save-group-ai-btn").addEventListener("click", async () => {
       }),
     });
     result.textContent = "✅ Tersimpan";
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  }
+});
+
+// ---- Akun WhatsApp: foto profil, banner (WA Business), nama, status, privacy ----
+
+async function loadAccountSettings() {
+  const notice = $("#account-disconnected-notice");
+
+  try {
+    const { account } = await api("/api/account");
+    notice.classList.add("hidden");
+
+    $("#account-photo-preview").src = account.photoUrl || "";
+    $("#account-name-input").value = account.name || "";
+    $("#account-status-input").value = account.status || "";
+
+    const privacy = account.privacy || {};
+    if (privacy.last) $("#account-privacy-last").value = privacy.last;
+    if (privacy.online) $("#account-privacy-online").value = privacy.online;
+    if (privacy.profile) $("#account-privacy-profile").value = privacy.profile;
+    if (privacy.status) $("#account-privacy-status").value = privacy.status;
+    if (privacy.readreceipts) $("#account-privacy-readreceipts").value = privacy.readreceipts;
+    if (privacy.groupadd) $("#account-privacy-groupadd").value = privacy.groupadd;
+  } catch (error) {
+    notice.classList.remove("hidden");
+  }
+}
+
+$("#account-photo-upload-btn").addEventListener("click", () => $("#account-photo-input").click());
+
+$("#account-photo-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const result = $("#account-photo-result");
+  result.textContent = "Mengunggah...";
+
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    await api("/api/account/photo", { method: "POST", body: formData });
+    result.textContent = "✅ Foto profil diperbarui";
+    $("#account-photo-preview").src = URL.createObjectURL(file);
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  } finally {
+    e.target.value = "";
+  }
+});
+
+$("#account-photo-remove-btn").addEventListener("click", async () => {
+  const result = $("#account-photo-result");
+  if (!confirm("Hapus foto profil WhatsApp?")) return;
+  result.textContent = "Menghapus...";
+
+  try {
+    await api("/api/account/photo", { method: "DELETE" });
+    result.textContent = "✅ Foto profil dihapus";
+    $("#account-photo-preview").src = "";
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  }
+});
+
+$("#account-cover-upload-btn").addEventListener("click", () => $("#account-cover-input").click());
+
+$("#account-cover-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const result = $("#account-cover-result");
+  result.textContent = "Mengunggah...";
+
+  try {
+    const formData = new FormData();
+    formData.append("file", file);
+    await api("/api/account/cover-photo", { method: "POST", body: formData });
+    result.textContent = "✅ Banner diperbarui";
+    const preview = $("#account-cover-preview");
+    preview.src = URL.createObjectURL(file);
+    preview.classList.remove("hidden");
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  } finally {
+    e.target.value = "";
+  }
+});
+
+$("#account-cover-remove-btn").addEventListener("click", async () => {
+  const result = $("#account-cover-result");
+  if (!confirm("Hapus banner WhatsApp Business?")) return;
+  result.textContent = "Menghapus...";
+
+  try {
+    await api("/api/account/cover-photo", { method: "DELETE" });
+    result.textContent = "✅ Banner dihapus";
+    $("#account-cover-preview").classList.add("hidden");
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  }
+});
+
+$("#account-save-name-btn").addEventListener("click", async () => {
+  const result = $("#account-name-result");
+  const name = $("#account-name-input").value.trim();
+
+  if (!name) {
+    result.textContent = "❌ Nama wajib diisi";
+    return;
+  }
+
+  result.textContent = "Menyimpan...";
+
+  try {
+    await api("/api/account/name", { method: "PUT", body: JSON.stringify({ name }) });
+    result.textContent = "✅ Nama tersimpan";
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  }
+});
+
+$("#account-save-status-btn").addEventListener("click", async () => {
+  const result = $("#account-name-result");
+  const status = $("#account-status-input").value.trim();
+  result.textContent = "Menyimpan...";
+
+  try {
+    await api("/api/account/status", { method: "PUT", body: JSON.stringify({ status }) });
+    result.textContent = "✅ Status tersimpan";
+  } catch (error) {
+    result.textContent = `❌ ${error.message}`;
+  }
+});
+
+$("#account-save-privacy-btn").addEventListener("click", async () => {
+  const result = $("#account-privacy-result");
+  result.textContent = "Menyimpan...";
+
+  try {
+    await api("/api/account/privacy", {
+      method: "PUT",
+      body: JSON.stringify({
+        last: $("#account-privacy-last").value,
+        online: $("#account-privacy-online").value,
+        profile: $("#account-privacy-profile").value,
+        status: $("#account-privacy-status").value,
+        readreceipts: $("#account-privacy-readreceipts").value,
+        groupadd: $("#account-privacy-groupadd").value,
+      }),
+    });
+    result.textContent = "✅ Privacy tersimpan";
   } catch (error) {
     result.textContent = `❌ ${error.message}`;
   }
@@ -1369,6 +1536,7 @@ function initApp() {
     loadOwnerAdmins();
     loadGlobalSettings();
     loadAdminUsers();
+    loadAccountSettings();
   }
 }
 
