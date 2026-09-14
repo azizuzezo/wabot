@@ -48,6 +48,7 @@ import {
   setTakeover,
   sendChatMessage,
   sendChatMedia,
+  deleteChatMessage,
   ensureAvatarUrl,
   refreshMissingAvatars,
 } from "./conversations.js";
@@ -822,6 +823,23 @@ export function startAdminServer({ botName } = {}) {
     })
   );
 
+  // "Hapus untuk semua orang" — cuma buat pesan yang kita/bot kirim sendiri
+  // (WhatsApp tidak mengizinkan revoke pesan orang lain).
+  app.delete(
+    "/api/chats/:jid/messages/:id",
+    asyncRoute(async (req, res) => {
+      const jid = req.params.jid;
+      const isGroup = jid.endsWith("@g.us");
+
+      if (!canAccessChat(req, jid, isGroup)) {
+        return res.status(403).json({ success: false, error: "Tidak punya akses ke chat ini" });
+      }
+
+      await deleteChatMessage({ jid, isGroup, id: req.params.id });
+      res.json({ success: true });
+    })
+  );
+
   app.post(
     "/api/chats/:jid/takeover",
     asyncRoute(async (req, res) => {
@@ -891,10 +909,17 @@ export function startAdminServer({ botName } = {}) {
       }
     };
 
+    const onDeleted = (payload) => {
+      if (canAccessChat(req, payload.jid, payload.jid.endsWith("@g.us"))) {
+        sendEvent("deleted", payload);
+      }
+    };
+
     botEvents.on("chat-message", onMessage);
     botEvents.on("chat-takeover", onTakeover);
     botEvents.on("chat-avatar", onAvatar);
     botEvents.on("chat-status", onStatus);
+    botEvents.on("chat-deleted", onDeleted);
 
     const keepAlive = setInterval(() => res.write(":\n\n"), 25_000);
 
@@ -904,6 +929,7 @@ export function startAdminServer({ botName } = {}) {
       botEvents.off("chat-takeover", onTakeover);
       botEvents.off("chat-avatar", onAvatar);
       botEvents.off("chat-status", onStatus);
+      botEvents.off("chat-deleted", onDeleted);
     });
   });
 

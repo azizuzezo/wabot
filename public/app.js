@@ -1003,6 +1003,37 @@ function replyButtonHtml() {
   </button>`;
 }
 
+// "Hapus untuk semua orang" — samain persis dengan teks placeholder yang
+// ditulis backend (admin/conversations.js DELETED_MESSAGE_TEXT) supaya
+// bubble yang sudah dihapus (setelah reload) tidak dikasih tombol hapus lagi.
+const DELETED_MESSAGE_TEXT = "🚫 Pesan ini telah dihapus";
+
+function deleteButtonHtml() {
+  return `<button class="bubble-delete-btn" type="button" aria-label="Hapus untuk semua orang">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  </button>`;
+}
+
+function markBubbleDeleted(id) {
+  const bubble = document.querySelector(`.bubble[data-msg-id="${CSS.escape(String(id))}"]`);
+  if (!bubble || bubble.classList.contains("bubble-deleted")) return;
+
+  bubble
+    .querySelectorAll(".bubble-reply, .bubble-image, .bubble-audio, .bubble-sticker, .bubble-document, .bubble-text, .bubble-viewonce-tag")
+    .forEach((el) => el.remove());
+  bubble.querySelector(".bubble-delete-btn")?.remove();
+  bubble.classList.remove("bubble-media");
+  bubble.classList.add("bubble-deleted");
+
+  const text = document.createElement("div");
+  text.className = "bubble-text bubble-deleted-text";
+  text.textContent = DELETED_MESSAGE_TEXT;
+  bubble.insertBefore(text, bubble.querySelector(".bubble-meta"));
+}
+
 // Centang WA — cuma dipasang di bubble keluar (kita yang kirim). "pending"
 // dapat jam kecil, "sent"/tanpa status dapat satu centang, "delivered" dua
 // centang abu-abu, "read" dua centang biru (ticks-read).
@@ -1054,7 +1085,11 @@ function appendBubble(msg) {
   bubble.dataset.replySender = msg.senderJid || "";
   bubble.dataset.replyFromMe = isOut ? "true" : "false";
 
-  bubble.innerHTML = `${replyPreviewHtml(msg)}${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta">${replyButtonHtml()}${viewOnceTag}<span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span>${ticks}</span>`;
+  const isDeleted = msg.text === DELETED_MESSAGE_TEXT;
+  const deleteBtn = isOut && !isDeleted ? deleteButtonHtml() : "";
+  if (isDeleted) bubble.classList.add("bubble-deleted");
+
+  bubble.innerHTML = `${replyPreviewHtml(msg)}${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta">${replyButtonHtml()}${deleteBtn}${viewOnceTag}<span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span>${ticks}</span>`;
 
   container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
@@ -1078,7 +1113,26 @@ function setReplyingTo({ id, text, sender, fromMe }) {
   $("#inbox-compose-text").focus();
 }
 
-$("#inbox-thread-messages").addEventListener("click", (e) => {
+$("#inbox-thread-messages").addEventListener("click", async (e) => {
+  const deleteBtn = e.target.closest(".bubble-delete-btn");
+
+  if (deleteBtn) {
+    const bubble = deleteBtn.closest(".bubble");
+    const id = bubble?.dataset.msgId;
+    if (!id || !activeChatJid) return;
+    if (!confirm("Hapus pesan ini untuk semua orang?")) return;
+
+    try {
+      await api(`/api/chats/${encodeURIComponent(activeChatJid)}/messages/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      markBubbleDeleted(id);
+    } catch (error) {
+      alert(error.message);
+    }
+    return;
+  }
+
   const btn = e.target.closest(".bubble-reply-btn");
   if (!btn) return;
 
@@ -1484,6 +1538,10 @@ function connectChatStream() {
     } else if (payload.type === "status") {
       if (payload.jid === activeChatJid) {
         updateBubbleTicks(payload.id, payload.status);
+      }
+    } else if (payload.type === "deleted") {
+      if (payload.jid === activeChatJid) {
+        markBubbleDeleted(payload.id);
       }
     } else if (payload.type === "takeover") {
       const existing = chats.find((c) => c.jid === payload.jid);

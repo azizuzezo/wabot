@@ -667,6 +667,27 @@ main { padding: 20px; max-width: 1000px; margin: 0 auto; }
 .bubble-reply-btn:hover { color: var(--wa-text); }
 .bubble-reply-btn svg { width: 15px; height: 15px; }
 
+.bubble-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin-right: 2px;
+  background: transparent;
+  border: none;
+  color: var(--wa-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.bubble:hover .bubble-delete-btn { opacity: 0.85; }
+.bubble-delete-btn:hover { color: var(--danger); }
+.bubble-delete-btn svg { width: 15px; height: 15px; }
+
+.bubble-deleted-text { font-style: italic; color: var(--wa-muted); }
+
 .inbox-attach-preview {
   display: flex;
   align-items: center;

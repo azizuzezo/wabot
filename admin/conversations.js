@@ -414,6 +414,44 @@ export async function sendChatMedia({
   await setTakeover(jid, { takenOver: true, byAdmin: fromAdmin, isGroup, name: chatName });
 }
 
+// "Hapus untuk semua orang" — WhatsApp cuma izinkan revoke pesan yang KITA
+// kirim sendiri (fromMe), makanya cuma dipanggil dari bubble keluar di Live
+// Chat. Key direkonstruksi dari id yang tersimpan (bukan disimpan utuh saat
+// kirim) — cukup buat revoke pesan sendiri, WA tidak butuh participant untuk
+// pesan fromMe:true meski di grup.
+export const DELETED_MESSAGE_TEXT = "🚫 Pesan ini telah dihapus";
+
+export async function deleteChatMessage({ jid, isGroup, id }) {
+  ensureDatabase();
+
+  if (!botState.sock) {
+    throw new Error("WhatsApp belum terhubung");
+  }
+
+  await botState.sock.sendMessage(jid, {
+    delete: { remoteJid: jid, id, fromMe: true, participant: isGroup ? botState.sock.user.id : undefined },
+  });
+
+  const { error } = await database
+    .from("bot_chat_messages")
+    .update({
+      text: DELETED_MESSAGE_TEXT,
+      media_type: null,
+      media_path: null,
+      media_filename: null,
+      media_mimetype: null,
+      media_view_once: false,
+      reply_to_id: null,
+      reply_to_text: null,
+      reply_to_sender: null,
+    })
+    .eq("id", id);
+
+  if (error) throw error;
+
+  botEvents.emit("chat-deleted", { jid, id });
+}
+
 // Ambil (dan cache 24 jam di bot_chat_state) URL foto profil WhatsApp untuk
 // sebuah jid — dipakai admin panel biar avatar di Live Chat mirip WA asli.
 // URL dari Baileys sudah berupa link CDN publik (pps.whatsapp.net), jadi
