@@ -117,6 +117,13 @@ const TTS_BASE_URL = EMBED_BASE_URL;
 const TTS_API_KEY = EMBED_API_KEY;
 const TTS_MODEL = process.env.GEMINI_TTS_MODEL || "gemini-3.1-flash-tts-preview";
 const TTS_VOICE = process.env.GEMINI_TTS_VOICE || "Kore";
+// Gemini TTS tidak punya field API terpisah buat gaya bicara (beda dari
+// "Director's note" Style/Pace/Accent di AI Studio, yang sebenarnya cuma
+// UI buat menyusun instruksi bahasa natural) — jadi gaya bicara dikontrol
+// dengan menempelkan instruksi ini di depan teks sebelum dikirim.
+const TTS_STYLE =
+  process.env.GEMINI_TTS_STYLE ||
+  "Say in an empathetic tone, at a natural pace, with a neutral accent";
 
 // Gemini TTS balikin audio sebagai PCM mentah (mono, 16-bit, 24kHz) via
 // base64, bukan file audio yang siap diputar — makanya perlu dibungkus
@@ -160,7 +167,7 @@ export async function synthesizeSpeech(text, { voice } = {}) {
     },
     body: JSON.stringify({
       model: TTS_MODEL,
-      input: text,
+      input: TTS_STYLE ? `${TTS_STYLE}: ${text}` : text,
       response_format: { type: "audio" },
       generation_config: {
         speech_config: [{ voice: voice || TTS_VOICE }],
