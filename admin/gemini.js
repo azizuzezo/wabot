@@ -188,13 +188,21 @@ export async function synthesizeSpeech(text, { voice } = {}) {
     throw new Error(`TTS API error ${response.status}: ${data?.error?.message || raw}`);
   }
 
-  const base64 = data?.output_audio?.data;
+  // Bentuk respons /interactions: audio ada di steps[].content[] (item
+  // dengan type "audio"), bukan di field "output_audio" seperti contoh di
+  // dokumentasi publik Google — dicek langsung ke API dan ternyata beda.
+  const audioContent = (data?.steps || [])
+    .flatMap((step) => step?.content || [])
+    .find((item) => item?.type === "audio" && item?.data);
 
-  if (!base64) {
+  if (!audioContent) {
     throw new Error("TTS API tidak mengembalikan audio");
   }
 
-  return pcmToWav(Buffer.from(base64, "base64"));
+  return pcmToWav(Buffer.from(audioContent.data, "base64"), {
+    sampleRate: audioContent.sample_rate || 24000,
+    channels: audioContent.channels || 1,
+  });
 }
 
 export function cosineSimilarity(a, b) {
