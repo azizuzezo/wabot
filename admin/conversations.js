@@ -59,6 +59,9 @@ function mapMessageRow(row) {
     mediaFilename: row.media_filename || null,
     mediaMimetype: row.media_mimetype || null,
     status: row.status || null,
+    replyToId: row.reply_to_id || null,
+    replyToText: row.reply_to_text || null,
+    replyToSender: row.reply_to_sender || null,
   };
 }
 
@@ -89,6 +92,8 @@ async function touchChatState({ jid, isGroup, name, preview, at }) {
 // diabaikan diam-diam, bukan dobel tercatat.
 // media (opsional): { mediaType: 'image'|'document'|'audio', buffer, mimetype, filename }
 // — file asli disimpan ke disk di sini (saveMedia), DB cuma nyimpan nama filenya.
+// replyTo (opsional): { id, sender, text } — pesan yang di-reply/di-quote,
+// dipakai buat nampilin preview kutipan di atas bubble (mirip WA asli).
 export async function recordMessage({
   id,
   jid,
@@ -101,6 +106,7 @@ export async function recordMessage({
   fromAdmin,
   chatName,
   media,
+  replyTo,
 }) {
   ensureDatabase();
 
@@ -119,6 +125,10 @@ export async function recordMessage({
     mediaPath = saveMedia(jid, media.buffer, media.mimetype);
   }
 
+  const replyToId = replyTo?.id || null;
+  const replyToText = replyTo?.text || null;
+  const replyToSender = replyTo?.sender || null;
+
   const { error } = await database.from("bot_chat_messages").insert({
     id: messageId,
     jid,
@@ -133,6 +143,9 @@ export async function recordMessage({
     media_path: mediaPath,
     media_filename: mediaFilename,
     media_mimetype: mediaMimetype,
+    reply_to_id: replyToId,
+    reply_to_text: replyToText,
+    reply_to_sender: replyToSender,
   });
 
   if (error && error.code !== "23505") {
@@ -158,6 +171,9 @@ export async function recordMessage({
     mediaUrl: buildMediaUrl(jid, mediaPath),
     mediaFilename,
     mediaMimetype,
+    replyToId,
+    replyToText,
+    replyToSender,
   });
 }
 
@@ -211,7 +227,7 @@ export async function getMessages(jid, { limit = MESSAGE_HISTORY_LIMIT } = {}) {
   const { data, error } = await database
     .from("bot_chat_messages")
     .select(
-      "id,jid,direction,sender_jid,push_name,text,from_bot,from_admin,created_at,media_type,media_path,media_filename,media_mimetype,status"
+      "id,jid,direction,sender_jid,push_name,text,from_bot,from_admin,created_at,media_type,media_path,media_filename,media_mimetype,status,reply_to_id,reply_to_text,reply_to_sender"
     )
     .eq("jid", jid)
     .order("created_at", { ascending: false })
@@ -276,14 +292,36 @@ export async function loadChatTakeoverState() {
 // Dipakai admin panel utk kirim pesan manual ke sebuah chat. Kirim manual =
 // otomatis ambil alih chat ini dari bot (lihat setTakeover di bawah), supaya
 // bot tidak ikut menjawab bersamaan dengan admin.
-export async function sendChatMessage({ jid, isGroup, text, fromAdmin, chatName }) {
+//
+// replyTo (opsional, dari admin panel klik "reply" di sebuah bubble):
+// { id, sender, fromMe, text } — dipakai buat bikin quoted-reply asli di WA
+// (bubble kutipan di atas pesan) sekaligus disimpan biar preview-nya juga
+// tampil di Live Chat kita sendiri.
+function buildQuotedStub(jid, isGroup, replyTo) {
+  if (!replyTo?.id) {
+    return undefined;
+  }
+
+  return {
+    key: {
+      remoteJid: jid,
+      id: replyTo.id,
+      fromMe: Boolean(replyTo.fromMe),
+      participant: isGroup ? replyTo.sender || undefined : undefined,
+    },
+    message: { conversation: replyTo.text || "" },
+  };
+}
+
+export async function sendChatMessage({ jid, isGroup, text, fromAdmin, chatName, replyTo }) {
   ensureDatabase();
 
   if (!botState.sock) {
     throw new Error("WhatsApp belum terhubung");
   }
 
-  const sent = await botState.sock.sendMessage(jid, { text });
+  const quoted = buildQuotedStub(jid, isGroup, replyTo);
+  const sent = await botState.sock.sendMessage(jid, { text }, quoted ? { quoted } : undefined);
 
   await recordMessage({
     id: sent?.key?.id,
@@ -293,6 +331,7 @@ export async function sendChatMessage({ jid, isGroup, text, fromAdmin, chatName 
     text,
     fromAdmin,
     chatName,
+    replyTo: replyTo?.id ? { id: replyTo.id, sender: replyTo.sender || null, text: replyTo.text || null } : null,
   });
 
   await setTakeover(jid, { takenOver: true, byAdmin: fromAdmin, isGroup, name: chatName });
@@ -303,7 +342,7 @@ export async function sendChatMessage({ jid, isGroup, text, fromAdmin, chatName 
 // (caption opsional), audio/* -> voice note (PTT, tanpa caption — WA tidak
 // mendukung caption di pesan suara), selain itu -> pesan dokumen (perlu
 // fileName).
-export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, caption, fromAdmin, chatName }) {
+export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, caption, fromAdmin, chatName, replyTo }) {
   ensureDatabase();
 
   if (!botState.sock) {
@@ -337,7 +376,8 @@ export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, 
     ? { audio: audioBuffer, mimetype: audioMimetype, ptt: true }
     : { document: buffer, mimetype, fileName: filename || "document", caption: caption || undefined };
 
-  const sent = await botState.sock.sendMessage(jid, payload);
+  const quoted = buildQuotedStub(jid, isGroup, replyTo);
+  const sent = await botState.sock.sendMessage(jid, payload, quoted ? { quoted } : undefined);
 
   await recordMessage({
     id: sent?.key?.id,
@@ -350,6 +390,7 @@ export async function sendChatMedia({ jid, isGroup, buffer, mimetype, filename, 
     media: isAudio
       ? { mediaType, buffer: audioBuffer, mimetype: audioMimetype, filename }
       : { mediaType, buffer, mimetype, filename },
+    replyTo: replyTo?.id ? { id: replyTo.id, sender: replyTo.sender || null, text: replyTo.text || null } : null,
   });
 
   await setTakeover(jid, { takenOver: true, byAdmin: fromAdmin, isGroup, name: chatName });

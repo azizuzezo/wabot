@@ -806,6 +806,31 @@ function mediaBubbleHtml(msg) {
   return "";
 }
 
+function mediaTypeLabel(mediaType) {
+  if (mediaType === "image") return "📷 Gambar";
+  if (mediaType === "audio") return "🎤 Voice note";
+  if (mediaType === "document") return "📄 Dokumen";
+  return "";
+}
+
+// Strip kutipan di atas bubble kalau pesan ini balesan/reply ke pesan lain
+// (dari WA user maupun reply manual admin) — mirip preview kutipan WA asli.
+function replyPreviewHtml(msg) {
+  if (!msg.replyToText) return "";
+
+  const preview = msg.replyToText.length > 120 ? `${msg.replyToText.slice(0, 120)}…` : msg.replyToText;
+  return `<div class="bubble-reply">${escapeHtml(preview)}</div>`;
+}
+
+function replyButtonHtml() {
+  return `<button class="bubble-reply-btn" type="button" aria-label="Balas pesan ini">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <polyline points="9 17 4 12 9 7" />
+      <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+    </svg>
+  </button>`;
+}
+
 // Centang WA — cuma dipasang di bubble keluar (kita yang kirim). "pending"
 // dapat jam kecil, "sent"/tanpa status dapat satu centang, "delivered" dua
 // centang abu-abu, "read" dua centang biru (ticks-read).
@@ -850,11 +875,54 @@ function appendBubble(msg) {
   const textHtml = msg.text ? `<div class="bubble-text">${escapeHtml(msg.text)}</div>` : "";
   const ticks = isOut ? ticksSvg(msg.status) : "";
 
-  bubble.innerHTML = `${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta"><span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span>${ticks}</span>`;
+  // Data buat "klik reply" di tombol bubble-reply-btn — teks yang dikutip
+  // makenya pesan aslinya (fallback ke label tipe media kalau tanpa teks).
+  bubble.dataset.replyText = msg.text || mediaTypeLabel(msg.mediaType) || "";
+  bubble.dataset.replySender = msg.senderJid || "";
+  bubble.dataset.replyFromMe = isOut ? "true" : "false";
+
+  bubble.innerHTML = `${replyPreviewHtml(msg)}${mediaBubbleHtml(msg)}${textHtml}<span class="bubble-meta">${replyButtonHtml()}<span>${escapeHtml(label)}</span><span>${formatChatTime(msg.createdAt)}</span>${ticks}</span>`;
 
   container.appendChild(bubble);
   container.scrollTop = container.scrollHeight;
 }
+
+// ---- Live Chat: balas pesan tertentu (reply/quote) ----
+
+let replyingTo = null;
+
+function clearReplyingTo() {
+  replyingTo = null;
+  $("#inbox-reply-preview").classList.add("hidden");
+  $("#inbox-reply-preview-text").textContent = "";
+}
+
+function setReplyingTo({ id, text, sender, fromMe }) {
+  if (!id) return;
+  replyingTo = { id, text: text || "", sender: sender || "", fromMe };
+  $("#inbox-reply-preview-text").textContent = text || "";
+  $("#inbox-reply-preview").classList.remove("hidden");
+  $("#inbox-compose-text").focus();
+}
+
+$("#inbox-thread-messages").addEventListener("click", (e) => {
+  const btn = e.target.closest(".bubble-reply-btn");
+  if (!btn) return;
+
+  const bubble = btn.closest(".bubble");
+  if (!bubble?.dataset.msgId) return;
+
+  setReplyingTo({
+    id: bubble.dataset.msgId,
+    text: bubble.dataset.replyText,
+    sender: bubble.dataset.replySender,
+    fromMe: bubble.dataset.replyFromMe === "true",
+  });
+});
+
+$("#inbox-reply-cancel-btn").addEventListener("click", () => {
+  clearReplyingTo();
+});
 
 async function openChat(jid) {
   cancelRecording();
@@ -866,6 +934,7 @@ async function openChat(jid) {
   renderThreadHeader(chat);
   $("#inbox-composer").classList.remove("hidden");
   clearPendingAttachment();
+  clearReplyingTo();
 
   const messagesEl = $("#inbox-thread-messages");
   messagesEl.innerHTML = '<p class="muted">Memuat...</p>';
@@ -1104,17 +1173,26 @@ $("#inbox-send-btn").addEventListener("click", async () => {
 
   const textarea = $("#inbox-compose-text");
   const text = textarea.value.trim();
+  const reply = replyingTo;
 
   if (pendingAttachment) {
     const file = pendingAttachment;
     const caption = text;
     textarea.value = "";
     clearPendingAttachment();
+    clearReplyingTo();
 
     try {
       const formData = new FormData();
       formData.append("file", file);
       if (caption) formData.append("caption", caption);
+
+      if (reply) {
+        formData.append("replyToId", reply.id);
+        formData.append("replyToSender", reply.sender);
+        formData.append("replyToFromMe", String(reply.fromMe));
+        formData.append("replyToText", reply.text);
+      }
 
       await api(`/api/chats/${encodeURIComponent(activeChatJid)}/media`, {
         method: "POST",
@@ -1130,11 +1208,17 @@ $("#inbox-send-btn").addEventListener("click", async () => {
   if (!text) return;
 
   textarea.value = "";
+  clearReplyingTo();
 
   try {
     await api(`/api/chats/${encodeURIComponent(activeChatJid)}/messages`, {
       method: "POST",
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({
+        text,
+        ...(reply
+          ? { replyToId: reply.id, replyToSender: reply.sender, replyToFromMe: reply.fromMe, replyToText: reply.text }
+          : {}),
+      }),
     });
   } catch (error) {
     alert(error.message);

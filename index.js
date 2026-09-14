@@ -613,8 +613,54 @@ function getContextInfo(message) {
     content.imageMessage?.contextInfo ||
     content.videoMessage?.contextInfo ||
     content.documentMessage?.contextInfo ||
+    content.audioMessage?.contextInfo ||
     null
   );
+}
+
+// Ringkasan singkat pesan yang di-quote (dipakai buat preview reply di Live
+// Chat) — teks aslinya kalau ada, kalau cuma media dikasih label generik.
+function describeQuotedMessage(quotedMessage) {
+  const content = unwrapMessage(quotedMessage);
+
+  if (!content) {
+    return "";
+  }
+
+  const text =
+    content.conversation ||
+    content.extendedTextMessage?.text ||
+    content.imageMessage?.caption ||
+    content.videoMessage?.caption ||
+    content.documentMessage?.caption ||
+    content.audioMessage?.caption ||
+    "";
+
+  if (text) return text;
+  if (content.imageMessage) return "📷 Gambar";
+  if (content.videoMessage) return "🎥 Video";
+  if (content.audioMessage) return "🎤 Voice note";
+  if (content.documentMessage) return content.documentMessage.fileName || "📄 Dokumen";
+  if (content.stickerMessage) return "🏷️ Stiker";
+
+  return "";
+}
+
+// Dipakai admin panel Live Chat: kalau msg ini balesan (reply/quote) ke
+// pesan lain, balikin info ringkas pesan yang di-quote itu buat ditampilkan
+// sebagai preview di atas bubble. null kalau msg bukan reply.
+function getReplyTo(msg) {
+  const context = getContextInfo(msg.message);
+
+  if (!context?.stanzaId) {
+    return null;
+  }
+
+  return {
+    id: context.stanzaId,
+    sender: context.participant || null,
+    text: describeQuotedMessage(context.quotedMessage) || null,
+  };
 }
 
 function getMentionedJids(msg) {
@@ -3276,6 +3322,11 @@ async function handleAiTrigger({ sock, msg, jid, sender, settings, text, command
       isGroup: jid.endsWith("@g.us"),
       text: answer,
       fromBot: true,
+      replyTo: {
+        id: msg.key.id,
+        sender: msg.key.participant || jid,
+        text: getMessageText(msg.message) || null,
+      },
     }).catch((error) => logError("Record chat message", error));
   } catch (error) {
     logError("Gemini", error);
@@ -3611,6 +3662,7 @@ async function startWhatsApp() {
             text: dmText,
             chatName: msg.pushName,
             media: dmMedia,
+            replyTo: getReplyTo(msg),
           }).catch((error) => logError("Record chat message", error));
 
           if (globalSettings.dmEnabled) {
@@ -3824,6 +3876,7 @@ async function startWhatsApp() {
             text: "",
             chatName: metadata?.subject,
             media: groupMedia,
+            replyTo: getReplyTo(msg),
           }).catch((error) => logError("Record chat message", error));
 
           continue;
@@ -3848,6 +3901,7 @@ async function startWhatsApp() {
             text,
             chatName: metadata?.subject,
             media: groupMedia,
+            replyTo: getReplyTo(msg),
           }).catch((error) => logError("Record chat message", error));
 
           if (!text.startsWith("!")) {

@@ -540,6 +540,7 @@ export function startAdminServer({ botName } = {}) {
       }
 
       const caption = String(req.body?.caption || "").trim();
+      const replyToId = String(req.body?.replyToId || "").trim();
 
       await sendChatMedia({
         jid,
@@ -549,6 +550,14 @@ export function startAdminServer({ botName } = {}) {
         filename: req.file.originalname,
         caption,
         fromAdmin: req.session.username,
+        replyTo: replyToId
+          ? {
+              id: replyToId,
+              sender: req.body?.replyToSender || null,
+              fromMe: req.body?.replyToFromMe === "true",
+              text: req.body?.replyToText || null,
+            }
+          : null,
       });
 
       res.json({ success: true });
@@ -612,7 +621,22 @@ export function startAdminServer({ botName } = {}) {
         return res.status(403).json({ success: false, error: "Tidak punya akses ke chat ini" });
       }
 
-      await sendChatMessage({ jid, isGroup, text, fromAdmin: req.session.username });
+      const replyToId = req.body?.replyToId ? String(req.body.replyToId) : "";
+
+      await sendChatMessage({
+        jid,
+        isGroup,
+        text,
+        fromAdmin: req.session.username,
+        replyTo: replyToId
+          ? {
+              id: replyToId,
+              sender: req.body?.replyToSender || null,
+              fromMe: Boolean(req.body?.replyToFromMe),
+              text: req.body?.replyToText || null,
+            }
+          : null,
+      });
       res.json({ success: true });
     })
   );
