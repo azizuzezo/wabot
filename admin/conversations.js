@@ -369,7 +369,8 @@ export async function sendChatMedia({
 
   const isImage = String(mimetype || "").startsWith("image/");
   const isAudio = String(mimetype || "").startsWith("audio/");
-  const mediaType = isImage ? "image" : isAudio ? "audio" : "document";
+  const isVideo = String(mimetype || "").startsWith("video/");
+  const mediaType = isImage ? "image" : isAudio ? "audio" : isVideo ? "video" : "document";
 
   let audioBuffer = buffer;
   let audioMimetype = mimetype;
@@ -392,6 +393,8 @@ export async function sendChatMedia({
     ? { image: buffer, mimetype, caption: caption || undefined, viewOnce: Boolean(viewOnce) }
     : isAudio
     ? { audio: audioBuffer, mimetype: audioMimetype, ptt: true }
+    : isVideo
+    ? { video: buffer, mimetype, caption: caption || undefined, viewOnce: Boolean(viewOnce) }
     : { document: buffer, mimetype, fileName: filename || "document", caption: caption || undefined };
 
   const quoted = buildQuotedStub(jid, isGroup, replyTo);
@@ -407,7 +410,7 @@ export async function sendChatMedia({
     chatName,
     media: isAudio
       ? { mediaType, buffer: audioBuffer, mimetype: audioMimetype, filename }
-      : { mediaType, buffer, mimetype, filename, viewOnce: isImage && Boolean(viewOnce) },
+      : { mediaType, buffer, mimetype, filename, viewOnce: (isImage || isVideo) && Boolean(viewOnce) },
     replyTo: replyTo?.id ? { id: replyTo.id, sender: replyTo.sender || null, text: replyTo.text || null } : null,
   });
 

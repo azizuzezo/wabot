@@ -532,9 +532,9 @@ async function extractIncomingMedia(sock, msg) {
     return null;
   }
 
-  const { imageMessage, documentMessage, audioMessage, stickerMessage } = content;
+  const { imageMessage, videoMessage, documentMessage, audioMessage, stickerMessage } = content;
 
-  if (!imageMessage && !documentMessage && !audioMessage && !stickerMessage) {
+  if (!imageMessage && !videoMessage && !documentMessage && !audioMessage && !stickerMessage) {
     return null;
   }
 
@@ -557,6 +557,15 @@ async function extractIncomingMedia(sock, msg) {
         mediaType: "image",
         buffer,
         mimetype: (imageMessage.mimetype || "image/jpeg").split(";")[0].trim(),
+        filename: null,
+      };
+    }
+
+    if (videoMessage) {
+      return {
+        mediaType: "video",
+        buffer,
+        mimetype: (videoMessage.mimetype || "video/mp4").split(";")[0].trim(),
         filename: null,
       };
     }

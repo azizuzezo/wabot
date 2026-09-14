@@ -955,6 +955,10 @@ function mediaBubbleHtml(msg) {
     return `<a href="${url}" target="_blank" rel="noopener"><img class="bubble-image" src="${url}" alt="" /></a>`;
   }
 
+  if (msg.mediaType === "video") {
+    return `<video class="bubble-video" controls src="${url}"></video>`;
+  }
+
   if (msg.mediaType === "audio") {
     return `<audio class="bubble-audio" controls src="${url}"></audio>`;
   }
@@ -979,6 +983,7 @@ function mediaBubbleHtml(msg) {
 
 function mediaTypeLabel(mediaType) {
   if (mediaType === "image") return "📷 Gambar";
+  if (mediaType === "video") return "🎥 Video";
   if (mediaType === "audio") return "🎤 Voice note";
   if (mediaType === "sticker") return "🏷️ Stiker";
   if (mediaType === "document") return "📄 Dokumen";
@@ -1022,7 +1027,7 @@ function markBubbleDeleted(id) {
   if (!bubble || bubble.classList.contains("bubble-deleted")) return;
 
   bubble
-    .querySelectorAll(".bubble-reply, .bubble-image, .bubble-audio, .bubble-sticker, .bubble-document, .bubble-text, .bubble-viewonce-tag")
+    .querySelectorAll(".bubble-reply, .bubble-image, .bubble-video, .bubble-audio, .bubble-sticker, .bubble-document, .bubble-text, .bubble-viewonce-tag")
     .forEach((el) => el.remove());
   bubble.querySelector(".bubble-delete-btn")?.remove();
   bubble.classList.remove("bubble-media");
