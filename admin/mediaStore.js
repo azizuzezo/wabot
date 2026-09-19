@@ -49,3 +49,9 @@ export function saveMedia(jid, buffer, mimetype) {
 export function mediaFilePath(jid, filename) {
   return path.join(dirFor(jid), path.basename(filename));
 }
+
+// Dipakai saat "Hapus Semua Chat" — buang seluruh lampiran Live Chat dari
+// disk sekaligus, bukan per-jid, karena chat & pesannya juga dihapus total.
+export function clearAllMedia() {
+  fs.rmSync(MEDIA_DIR, { recursive: true, force: true });
+}

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { database } from "./db.js";
 import { botState, botEvents, setChatTakeover } from "./bridge.js";
-import { saveMedia } from "./mediaStore.js";
+import { saveMedia, clearAllMedia } from "./mediaStore.js";
 import { convertToVoiceNote } from "./audioConvert.js";
 
 const MESSAGE_HISTORY_LIMIT = 200;
@@ -453,6 +453,25 @@ export async function deleteChatMessage({ jid, isGroup, id }) {
   if (error) throw error;
 
   botEvents.emit("chat-deleted", { jid, id });
+}
+
+// Hapus SELURUH riwayat Live Chat: semua baris bot_chat_messages &
+// bot_chat_state, plus semua lampiran media di disk. Cuma menghapus catatan
+// di sisi kita — tidak me-revoke pesan di WhatsApp (beda dari
+// deleteChatMessage di atas yang per-pesan & fromMe only). Dibatasi ke super
+// admin di route-nya (admin/server.js) karena ireversibel & bot-wide.
+export async function deleteAllChats() {
+  ensureDatabase();
+
+  const { error: messagesError } = await database.from("bot_chat_messages").delete().not("id", "is", null);
+  if (messagesError) throw messagesError;
+
+  const { error: stateError } = await database.from("bot_chat_state").delete().not("jid", "is", null);
+  if (stateError) throw stateError;
+
+  clearAllMedia();
+
+  botEvents.emit("chats-cleared", {});
 }
 
 // Ambil (dan cache 24 jam di bot_chat_state) URL foto profil WhatsApp untuk

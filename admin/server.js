@@ -49,6 +49,7 @@ import {
   sendChatMessage,
   sendChatMedia,
   deleteChatMessage,
+  deleteAllChats,
   ensureAvatarUrl,
   refreshMissingAvatars,
 } from "./conversations.js";
@@ -870,6 +871,17 @@ export function startAdminServer({ botName } = {}) {
     })
   );
 
+  // Hapus semua chat & pesan Live Chat sekaligus (termasuk lampiran di
+  // disk). Ireversibel & bot-wide, jadi dibatasi ke super admin saja.
+  app.delete(
+    "/api/chats",
+    requireSuper,
+    asyncRoute(async (req, res) => {
+      await deleteAllChats();
+      res.json({ success: true });
+    })
+  );
+
   app.get("/api/chats/stream", (req, res) => {
     if (!canAccessLiveChat(req)) {
       return res.status(403).json({ success: false, error: "Tidak punya akses ke Live Chat" });
@@ -915,11 +927,16 @@ export function startAdminServer({ botName } = {}) {
       }
     };
 
+    const onChatsCleared = () => {
+      sendEvent("chats-cleared", {});
+    };
+
     botEvents.on("chat-message", onMessage);
     botEvents.on("chat-takeover", onTakeover);
     botEvents.on("chat-avatar", onAvatar);
     botEvents.on("chat-status", onStatus);
     botEvents.on("chat-deleted", onDeleted);
+    botEvents.on("chats-cleared", onChatsCleared);
 
     const keepAlive = setInterval(() => res.write(":\n\n"), 25_000);
 
@@ -930,6 +947,7 @@ export function startAdminServer({ botName } = {}) {
       botEvents.off("chat-avatar", onAvatar);
       botEvents.off("chat-status", onStatus);
       botEvents.off("chat-deleted", onDeleted);
+      botEvents.off("chats-cleared", onChatsCleared);
     });
   });
 

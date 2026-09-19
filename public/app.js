@@ -1490,6 +1490,33 @@ $("#inbox-refresh-btn").addEventListener("click", (e) => {
   loadChatList().finally(() => btn.classList.remove("spinning"));
 });
 
+function resetInboxView() {
+  activeChatJid = null;
+  chats = [];
+  renderChatList();
+  renderThreadHeader(null);
+  $("#inbox-thread-messages").innerHTML = "";
+  $("#inbox-composer").classList.add("hidden");
+}
+
+$("#inbox-delete-all-btn").addEventListener("click", async () => {
+  if (!confirm("Hapus SEMUA chat & pesan Live Chat? Tindakan ini tidak bisa dibatalkan.")) {
+    return;
+  }
+
+  const btn = $("#inbox-delete-all-btn");
+  btn.disabled = true;
+
+  try {
+    await api("/api/chats", { method: "DELETE" });
+    resetInboxView();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 function connectChatStream() {
   if (chatStream) return;
 
@@ -1548,6 +1575,8 @@ function connectChatStream() {
       if (payload.jid === activeChatJid) {
         markBubbleDeleted(payload.id);
       }
+    } else if (payload.type === "chats-cleared") {
+      resetInboxView();
     } else if (payload.type === "takeover") {
       const existing = chats.find((c) => c.jid === payload.jid);
 
